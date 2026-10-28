@@ -1,11 +1,12 @@
 ---
 const baseUrl = import.meta.env.BASE_URL;
+const homeUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
 ---
 
 <header class="site-header">
   <a href="#studio" class="skip-link">Skip to studio</a>
   <div class="header-inner mx-auto max-w-6xl px-6">
-    <a href={baseUrl} class="brand-lockup" aria-label="AXOM_VID home">
+    <a href={homeUrl} class="brand-lockup" aria-label="AXOM_VID home">
       <svg class="brand-mark" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
         <polygon points="50,6 72.4,45.5 58.1,58.1 65.3,44 50,21.3 34.7,44 41.9,58.1 27.6,45.5" />
         <polygon points="50,56.4 57.2,63.3 50,70.2 42.8,63.3" />

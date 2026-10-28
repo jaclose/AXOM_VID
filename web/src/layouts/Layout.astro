@@ -25,13 +25,14 @@ const {
 // `/` locally). Always use Astro.url.pathname or import.meta.env.BASE_URL
 // when linking to internal assets so paths work in both contexts.
 const baseUrl = import.meta.env.BASE_URL;
+const assetBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
 
 // Build absolute URLs for OG tags. Social platforms ignore relative paths,
 // so this matters even for tiny projects. SITE is set in astro.config.mjs.
 const siteOrigin = Astro.site?.origin ?? "https://jaclose.github.io";
 const pagePath = Astro.url.pathname;
-const canonical = new URL(pagePath, siteOrigin).toString();
-const absoluteOg = new URL(`${baseUrl}${ogImage}`, siteOrigin).toString();
+const canonical = new URL(pagePath === baseUrl ? assetBase : pagePath, siteOrigin).toString();
+const absoluteOg = new URL(`${assetBase}${ogImage}`, siteOrigin).toString();
 
 // JSON-LD structured data. Google reads this to render rich results in search,
 // and it's a cheap, low-risk win for any public site. We declare the project
@@ -75,8 +76,8 @@ const jsonLd = {
 
     <!-- Favicons. The SVG covers modern browsers; the PNG is a fallback for
          older platforms and for social cards that prefer raster. -->
-    <link rel="icon" type="image/svg+xml" href={`${baseUrl}favicon.svg`} />
-    <link rel="apple-touch-icon" href={`${baseUrl}axom-icon-512.png`} />
+    <link rel="icon" type="image/svg+xml" href={`${assetBase}favicon.svg`} />
+    <link rel="apple-touch-icon" href={`${assetBase}axom-icon-512.png`} />
 
     <!-- Open Graph (Facebook, LinkedIn, Slack, Discord). The image is the
          single most important tag here: a good card more than doubles

@@ -8,6 +8,8 @@
 // We could reach for React or another framework here, but for one page with one
 // form, vanilla TS is lighter, faster to load, and easier for a learner to read
 // top to bottom without framework noise.
+const baseUrl = import.meta.env.BASE_URL;
+const assetBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
 ---
 
 <section class="studio mx-auto max-w-6xl px-6 pb-16 sm:pb-24" id="studio" aria-label="Video studio">
@@ -41,7 +43,7 @@
             <p id="source-image-help" class="field-hint mt-1">PNG, JPG, or WEBP &middot; max 8 MB</p>
           </div>
           <!-- Preview shown after upload. Hidden until JS swaps it in. -->
-          <img src={`${import.meta.env.BASE_URL}favicon.svg`} data-dropzone-preview class="source-preview hidden max-h-[240px] sm:max-h-[280px] object-contain" alt="Selected source image preview" />
+          <img src={`${assetBase}favicon.svg`} data-dropzone-preview class="source-preview hidden max-h-[240px] sm:max-h-[280px] object-contain" alt="Selected source image preview" />
         </label>
         <button type="button" data-remove-image class="btn-ghost hidden mt-2 text-xs" aria-label="Remove source image">Remove image</button>
       </div>
