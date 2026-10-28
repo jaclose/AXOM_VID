@@ -72,7 +72,7 @@ event to pull the video URL out of the return tuple. That file and
 
 ## Run locally
 
-You need Node 20+, [pnpm](https://pnpm.io/) 9+, and a clone of this repo. Both lockfiles are v9, which is what CI installs with. Create a [Hugging Face read token](https://huggingface.co/settings/tokens), then put it in `worker/.dev.vars` as `HF_TOKEN=<your token>`. That file is gitignored. Do not place the token in `web/.env` or any `PUBLIC_` variable.
+You need Node 20+, [pnpm](https://pnpm.io/) 9+, and a clone of this repo. Both lockfiles are v9, which is what CI installs with. The local preview uses the deployed Worker by default, so you can start with the frontend alone:
 
 ```powershell
 # Frontend (Astro dev server on :4321)
@@ -80,13 +80,9 @@ cd web
 pnpm install
 pnpm dev
 
-# Worker proxy (Wrangler local sandbox on :8787) in a second terminal
-cd worker
-pnpm install
-pnpm wrangler dev
 ```
 
-Open http://localhost:4321 and try a generation. The frontend reads `PUBLIC_WORKER_URL` from `web/.env`, defaulting to `http://localhost:8787` which matches `wrangler dev`. `http://localhost:8787/health` reports `configured: true` when the Worker has a token; it never returns the token itself.
+Open http://localhost:4321 and try a generation. For independent local Worker development, create a [Hugging Face read token](https://huggingface.co/settings/tokens), put it in gitignored `worker/.dev.vars` as `HF_TOKEN=<your token>`, run `pnpm wrangler dev` from `worker/`, and put `PUBLIC_WORKER_URL=http://localhost:8787` in `web/.env`. Never place the token in `web/.env` or a `PUBLIC_` variable. The Worker `/health` route reports `configured: true` when it has a token; it never returns the token itself.
 
 ## Deploy
 

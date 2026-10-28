@@ -20,8 +20,8 @@
  */
 
 // Type-safe handle on the Worker URL injected at build time via import.meta.env.
-// Falls back to localhost so `pnpm dev` works without a .env file.
-const WORKER_URL = import.meta.env.PUBLIC_WORKER_URL || "http://localhost:8787";
+// Use the deployed Worker by default so the local preview works immediately.
+const WORKER_URL = import.meta.env.PUBLIC_WORKER_URL || "https://axomvidjd.jafardabbagh.workers.dev";
 
 // ---------- DOM lookup helpers ----------
 
