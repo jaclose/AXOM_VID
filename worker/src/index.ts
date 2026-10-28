@@ -1,5 +1,5 @@
 /**
- * NiftyVid proxy Worker.
+ * AXOM_VID proxy Worker.
  *
  * What it does:
  *   1. Receives a POST from the browser with a multipart form (image + JSON params).
@@ -8,8 +8,8 @@
  *   4. Opens the SSE event stream for that event_id and hands the response body
  *      straight back to the browser without reading a byte of it.
  *
- * There is no step 5. The Worker never sees the video URL, because the event
- * that carries it is parsed in the browser.
+ *   5. Streams completed MP4 files on a separate download route so browsers
+ *      save them even when the video lives on another origin.
  *
  * Why we need this:
  *   - HF Spaces don't reliably allow cross-origin requests from arbitrary domains,
@@ -36,6 +36,10 @@ export interface Env {
   readonly ALLOWED_ORIGINS: string;
   readonly HF_SPACE_BASE: string;
   readonly HF_FN_NAME: string;
+  readonly HF_TOKEN?: string;
+  readonly GENERATION_RATE_LIMIT?: {
+    limit(input: { key: string }): Promise<{ success: boolean }>;
+  };
 }
 
 // Default negative prompt lifted from the upstream Space's app.py. Keeping it
@@ -68,6 +72,22 @@ export default {
 
     if (req.method === "POST" && url.pathname === "/generate") {
       try {
+        if (origin && !isAllowedOrigin(origin, env)) {
+          return jsonResponse({ error: "This site is not allowed to use the generator." }, 403);
+        }
+        if (!env.HF_TOKEN?.trim()) {
+          return withCors(jsonResponse({
+            error: "Generation is not configured yet. The site owner needs to add a Hugging Face token.",
+          }, 503), origin, env);
+        }
+        if (env.GENERATION_RATE_LIMIT) {
+          const { success } = await env.GENERATION_RATE_LIMIT.limit({ key: "generate" });
+          if (!success) {
+            const limited = jsonResponse({ error: "The shared generator is busy. Wait a minute and try again." }, 429);
+            limited.headers.set("Retry-After", "60");
+            return withCors(limited, origin, env);
+          }
+        }
         const result = await handleGenerate(req, env);
         return withCors(result, origin, env);
       } catch (err) {
@@ -77,7 +97,17 @@ export default {
     }
 
     if (req.method === "GET" && url.pathname === "/health") {
-      return withCors(jsonResponse({ ok: true }), origin, env);
+      return withCors(jsonResponse({ ok: true, configured: Boolean(env.HF_TOKEN?.trim()) }), origin, env);
+    }
+
+    if (req.method === "GET" && url.pathname === "/download") {
+      try {
+        const result = await handleDownload(url.searchParams.get("url"), env);
+        return withCors(result, origin, env);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return withCors(jsonResponse({ error: msg }, 502), origin, env);
+      }
     }
 
     return withCors(jsonResponse({ error: "Not found" }, 404), origin, env);
@@ -109,6 +139,12 @@ async function handleGenerate(req: Request, env: Env): Promise<Response> {
   if (!(image instanceof File)) {
     return jsonResponse({ error: "Missing 'image' form field" }, 400);
   }
+  if (!["image/png", "image/jpeg", "image/webp"].includes(image.type)) {
+    return jsonResponse({ error: "Use a PNG, JPG, or WEBP image." }, 415);
+  }
+  if (image.size === 0) {
+    return jsonResponse({ error: "The image is empty." }, 400);
+  }
   if (image.size > 8 * 1024 * 1024) {
     return jsonResponse({ error: "Image must be 8 MB or smaller" }, 413);
   }
@@ -118,8 +154,22 @@ async function handleGenerate(req: Request, env: Env): Promise<Response> {
   // the next line could read .prompt off a null and throw a 500 at a caller
   // who only sent a slightly wrong body.
   const parsed = typeof paramsRaw === "string" ? safeJsonParse(paramsRaw) : null;
-  const userParams: UserParams =
-    parsed !== null && typeof parsed === "object" ? (parsed as UserParams) : {};
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return jsonResponse({ error: "Invalid generation settings." }, 400);
+  }
+  const userParams = parsed as UserParams;
+  if (typeof userParams.prompt !== "string" || !userParams.prompt.trim()) {
+    return jsonResponse({ error: "Write a motion prompt before generating." }, 400);
+  }
+  if (userParams.prompt.length > 1200) {
+    return jsonResponse({ error: "Keep the motion prompt under 1,200 characters." }, 400);
+  }
+  if (userParams.duration_seconds !== undefined && !Number.isFinite(userParams.duration_seconds)) {
+    return jsonResponse({ error: "Duration must be a number." }, 400);
+  }
+  if (userParams.steps !== undefined && !Number.isFinite(userParams.steps)) {
+    return jsonResponse({ error: "Inference steps must be a number." }, 400);
+  }
 
   // Fast steps. Each is a single short HTTP call, well under any limit.
   const imageRef = await uploadImageToSpace(image, env);
@@ -129,10 +179,10 @@ async function handleGenerate(req: Request, env: Env): Promise<Response> {
   // straight to the browser.
   const upstream = await fetch(
     `${env.HF_SPACE_BASE}/gradio_api/call/${env.HF_FN_NAME}/${eventId}`,
-    { method: "GET", headers: { Accept: "text/event-stream" } },
+    { method: "GET", headers: { Accept: "text/event-stream", ...authHeaders(env) } },
   );
   if (!upstream.ok || !upstream.body) {
-    throw new Error(`Could not open result stream (${upstream.status}).`);
+    throw await upstreamFailure(upstream, "Result stream");
   }
 
   // Return the upstream body directly. Cloudflare will pipe it. We add the
@@ -144,6 +194,45 @@ async function handleGenerate(req: Request, env: Env): Promise<Response> {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       "X-Accel-Buffering": "no",
+      "X-HF-Space-Base": env.HF_SPACE_BASE,
+    },
+  });
+}
+
+async function handleDownload(rawUrl: string | null, env: Env): Promise<Response> {
+  if (!rawUrl) return jsonResponse({ error: "Missing video URL." }, 400);
+
+  let videoUrl: URL;
+  try {
+    videoUrl = new URL(rawUrl);
+  } catch {
+    return jsonResponse({ error: "Invalid video URL." }, 400);
+  }
+  const spaceOrigin = new URL(env.HF_SPACE_BASE).origin;
+  if (
+    videoUrl.origin !== spaceOrigin ||
+    videoUrl.username || videoUrl.password || videoUrl.hash || videoUrl.search ||
+    !videoUrl.pathname.startsWith("/gradio_api/file=") ||
+    !videoUrl.pathname.toLowerCase().endsWith(".mp4")
+  ) {
+    return jsonResponse({ error: "This video URL is not from the configured Space." }, 400);
+  }
+
+  const upstream = await fetch(videoUrl.href, {
+    method: "GET",
+    headers: authHeaders(env),
+    redirect: "manual",
+  });
+  if (!upstream.ok || !upstream.body) {
+    throw await upstreamFailure(upstream, "Video download");
+  }
+  return new Response(upstream.body, {
+    status: 200,
+    headers: {
+      "Content-Type": "video/mp4",
+      "Content-Disposition": `attachment; filename="axom-vid-${Date.now()}.mp4"`,
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff",
     },
   });
 }
@@ -162,10 +251,11 @@ async function uploadImageToSpace(file: File, env: Env): Promise<string> {
 
   const res = await fetch(`${env.HF_SPACE_BASE}/gradio_api/upload`, {
     method: "POST",
+    headers: authHeaders(env),
     body: fd,
   });
   if (!res.ok) {
-    throw new Error(`Image upload failed (${res.status}). The Space may be sleeping or rate-limited.`);
+    throw await upstreamFailure(res, "Image upload");
   }
   const paths = (await res.json()) as string[];
   if (!Array.isArray(paths) || !paths[0]) {
@@ -228,11 +318,11 @@ async function submitJob(
 
   const res = await fetch(`${env.HF_SPACE_BASE}/gradio_api/call/${env.HF_FN_NAME}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders(env) },
     body: JSON.stringify({ data }),
   });
   if (!res.ok) {
-    throw new Error(`Job submission failed (${res.status}).`);
+    throw await upstreamFailure(res, "Job submission");
   }
   const body = (await res.json()) as { event_id?: string };
   if (!body.event_id) {
@@ -263,6 +353,28 @@ function safeJsonParse(s: string): unknown {
   }
 }
 
+function authHeaders(env: Env): Record<string, string> {
+  return env.HF_TOKEN?.trim() ? { Authorization: `Bearer ${env.HF_TOKEN.trim()}` } : {};
+}
+
+async function upstreamFailure(res: Response, stage: string): Promise<Error> {
+  if (res.status === 401 || res.status === 403) {
+    return new Error("Hugging Face rejected the configured token. The site owner should check HF_TOKEN.");
+  }
+  if (res.status === 429) {
+    return new Error("Hugging Face GPU quota is exhausted. Try again after it resets.");
+  }
+  let detail = "";
+  try {
+    const body = await res.json() as { error?: unknown; message?: unknown };
+    const value = body.error ?? body.message;
+    if (typeof value === "string") detail = value.slice(0, 240);
+  } catch {
+    // A proxy can return HTML or an empty body instead of JSON.
+  }
+  return new Error(`${stage} failed (${res.status}).${detail ? ` ${detail}` : " The Space may be temporarily unavailable."}`);
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -280,14 +392,18 @@ function jsonResponse(body: unknown, status = 200): Response {
  * an open proxy" Status Hacker News posts.
  */
 function withCors(res: Response, origin: string, env: Env): Response {
-  const allowed = env.ALLOWED_ORIGINS.split(",").map((s) => s.trim());
   const headers = new Headers(res.headers);
-  if (origin && allowed.includes(origin)) {
+  if (origin && isAllowedOrigin(origin, env)) {
     headers.set("Access-Control-Allow-Origin", origin);
     headers.set("Vary", "Origin");
   }
   headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   headers.set("Access-Control-Allow-Headers", "Content-Type");
+  headers.set("Access-Control-Expose-Headers", "X-HF-Space-Base");
   headers.set("Access-Control-Max-Age", "86400");
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
+function isAllowedOrigin(origin: string, env: Env): boolean {
+  return env.ALLOWED_ORIGINS.split(",").some((allowed) => allowed.trim() === origin);
 }

@@ -15,25 +15,20 @@ interface Props {
   ogImage?: string;
 }
 
-// The defaults are tuned for the homepage and for search engines. Keep the
-// title under ~60 characters and the description between 140 and 160 so
-// Google doesn't truncate either. Lead with the verb the user is trying to
-// accomplish ("Animate"), then the model ("Wan 2.2"), then the differentiator
-// ("free, in your browser"). That ordering matches how people actually search.
 const {
-  title = "NiftyVid: animate an image with Wan 2.2, free and in your browser",
-  description = "Drop a photo, write a short prompt, get a few seconds of AI-generated video. Powered by Wan 2.2 image-to-video on a public Hugging Face Space. No signup, no card.",
-  ogImage = "og.png",
+  title = "AXOM_VID — Turn a still frame into motion",
+  description = "AXOM_VID turns a source image and a motion prompt into a short Wan 2.2 video. Preview the result, refine the direction, and download your clip.",
+  ogImage = "axom-vid-og.png",
 } = Astro.props;
 
-// The base path is read from Astro's config (`/nifty-vid` in production,
+// The base path is read from Astro's config (`/AXOM_VID` in production,
 // `/` locally). Always use Astro.url.pathname or import.meta.env.BASE_URL
 // when linking to internal assets so paths work in both contexts.
 const baseUrl = import.meta.env.BASE_URL;
 
 // Build absolute URLs for OG tags. Social platforms ignore relative paths,
 // so this matters even for tiny projects. SITE is set in astro.config.mjs.
-const siteOrigin = Astro.site?.origin ?? "https://igorcsis.github.io";
+const siteOrigin = Astro.site?.origin ?? "https://jaclose.github.io";
 const pagePath = Astro.url.pathname;
 const canonical = new URL(pagePath, siteOrigin).toString();
 const absoluteOg = new URL(`${baseUrl}${ogImage}`, siteOrigin).toString();
@@ -44,13 +39,14 @@ const absoluteOg = new URL(`${baseUrl}${ogImage}`, siteOrigin).toString();
 const jsonLd = {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
-  name: "NiftyVid",
+  name: "AXOM_VID",
   url: canonical,
   description,
   applicationCategory: "MultimediaApplication",
   operatingSystem: "Any (web)",
   offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
-  author: { "@type": "Person", name: "Igor Lima", url: "https://github.com/IgorCSIS" },
+  author: { "@type": "Person", name: "Jafar Dabbagh", url: "https://www.axom.info/" },
+  isBasedOn: "https://github.com/IgorCSIS/nifty-vid",
 };
 ---
 
@@ -60,8 +56,9 @@ const jsonLd = {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="generator" content={Astro.generator} />
-    <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#020617" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0d0d0e" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#eee7da" media="(prefers-color-scheme: light)" />
 
     <title>{title}</title>
     <meta name="description" content={description} />
@@ -71,28 +68,28 @@ const jsonLd = {
          mostly ignores them. They cost nothing and occasionally help. -->
     <meta
       name="keywords"
-      content="image to video, AI video generator, Wan 2.2, Wan2.2, Hugging Face Space, free video AI, animate photo, image animation, text to video, open source video AI, NiftyAi"
+      content="AXOM_VID, image to video, Wan 2.2, animate an image, AI video generator, motion prompt"
     />
-    <meta name="author" content="Igor Lima" />
+    <meta name="author" content="Jafar Dabbagh" />
     <meta name="robots" content="index, follow, max-image-preview:large" />
 
     <!-- Favicons. The SVG covers modern browsers; the PNG is a fallback for
          older platforms and for social cards that prefer raster. -->
     <link rel="icon" type="image/svg+xml" href={`${baseUrl}favicon.svg`} />
-    <link rel="apple-touch-icon" href={`${baseUrl}og.png`} />
+    <link rel="apple-touch-icon" href={`${baseUrl}axom-icon-512.png`} />
 
     <!-- Open Graph (Facebook, LinkedIn, Slack, Discord). The image is the
          single most important tag here: a good card more than doubles
          click-through on shared links. -->
     <meta property="og:type" content="website" />
-    <meta property="og:site_name" content="NiftyVid by Igor Lima" />
+    <meta property="og:site_name" content="AXOM_VID" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:url" content={canonical} />
     <meta property="og:image" content={absoluteOg} />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
-    <meta property="og:image:alt" content="NiftyVid: image to video with Wan 2.2" />
+    <meta property="og:image:alt" content="AXOM_VID: A still frame, set in motion" />
     <meta property="og:locale" content="en_US" />
 
     <!-- Twitter / X. summary_large_image gives the wide hero card. -->
@@ -100,11 +97,11 @@ const jsonLd = {
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={absoluteOg} />
-    <meta name="twitter:image:alt" content="NiftyVid: image to video with Wan 2.2" />
+    <meta name="twitter:image:alt" content="AXOM_VID: A still frame, set in motion" />
 
     <!-- JSON-LD structured data for search engine rich results. set:html is
          the Astro escape hatch that prevents the JSON from being HTML-escaped. -->
-    <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+    <script is:inline type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
   </head>
   <body>
     <slot />

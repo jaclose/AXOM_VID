@@ -1,40 +1,27 @@
 ---
-// Top navigation. Minimal on purpose: brand mark on the left, a portfolio
-// link on the right. The hire-me CTA lives on the portfolio site, not here.
 const baseUrl = import.meta.env.BASE_URL;
 ---
 
-<header class="w-full border-b border-ink-700/60 bg-ink-900/80 backdrop-blur">
-  <div class="mx-auto max-w-6xl px-6 py-4 flex items-center justify-between">
-    <a href={baseUrl} class="group flex items-center gap-3">
-      <!-- Inline SVG mark. Two strokes forming an abstract play/film symbol
-           in the mint accent. Stays crisp at any size and doesn't need a
-           separate file in /public. -->
-      <svg viewBox="0 0 32 32" class="w-8 h-8" aria-hidden="true">
-        <rect x="2" y="6" width="28" height="20" rx="4" fill="none" stroke="#10b981" stroke-width="2" />
-        <path d="M13 12 L22 16 L13 20 Z" fill="#10b981" />
+<header class="site-header">
+  <a href="#studio" class="skip-link">Skip to studio</a>
+  <div class="header-inner mx-auto max-w-6xl px-6">
+    <a href={baseUrl} class="brand-lockup" aria-label="AXOM_VID home">
+      <svg class="brand-mark" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
+        <polygon points="50,6 72.4,45.5 58.1,58.1 65.3,44 50,21.3 34.7,44 41.9,58.1 27.6,45.5" />
+        <polygon points="50,56.4 57.2,63.3 50,70.2 42.8,63.3" />
+        <polygon points="22.88,54.34 28.97,56.55 6.83,94 0,93.1" />
+        <polygon points="77.12,54.34 71.03,56.55 93.17,94 100,93.1" />
       </svg>
-      <span class="text-slate-100 font-semibold tracking-tight">
-        NiftyVid
-        <span class="text-slate-500 font-normal">by Igor Lima</span>
+      <span class="brand-type" aria-hidden="true">
+        <svg class="brand-wordmark" viewBox="0 0 410 92" focusable="false">
+          <path d="M22 82 52 20 82 82 M122 20l56 62 M178 20l-56 62 M332 82V20l25 39 25-39v62" />
+          <circle cx="251" cy="51" r="31" />
+        </svg>
+        <span class="brand-suffix">_VID</span>
       </span>
     </a>
-
-    <nav class="flex items-center gap-4 text-sm">
-      <a
-        href="https://github.com/IgorCSIS/nifty-vid"
-        class="text-slate-400 hover:text-mint-glow transition"
-        target="_blank"
-        rel="noopener"
-      >
-        Source
-      </a>
-      <a
-        href="https://igorcsis.github.io/niftyai-portfolio/"
-        class="text-slate-400 hover:text-mint-glow transition"
-      >
-        Portfolio
-      </a>
-    </nav>
+    <a class="header-back" href="https://www.axom.info/" target="_blank" rel="noopener noreferrer" aria-label="Visit AXOM, opens in a new tab">
+      AXOM <span aria-hidden="true">↗</span>
+    </a>
   </div>
 </header>

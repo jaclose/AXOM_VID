@@ -1,18 +1,20 @@
 ---
-// Small intro band above the studio. Tells the user what this thing does
-// without a giant marketing block. Keep it tight: the studio itself is the
-// hero of the page, not the copy.
+// A restrained title band keeps the generator itself in the first viewport.
 ---
 
-<section class="mx-auto max-w-6xl px-6 pt-16 pb-8 text-center">
-  <p class="text-mint-glow text-sm font-mono uppercase tracking-[0.18em]">
-    Wan 2.2 · image → video
-  </p>
-  <h1 class="mt-3 text-4xl sm:text-5xl font-semibold tracking-tight text-slate-50">
-    Make a still image move.
-  </h1>
-  <p class="mt-4 text-slate-400 max-w-2xl mx-auto leading-relaxed">
-    Drop a photo, write a short prompt, get a few seconds of video.
-    Runs on a public Hugging Face Space, so it's free, queued, and surprisingly capable.
-  </p>
+<section class="hero mx-auto max-w-6xl px-6" aria-labelledby="page-title">
+  <div class="hero-copy">
+    <p class="eyebrow"><span class="eyebrow-rule" aria-hidden="true"></span> AXOM / MOTION STUDY 01</p>
+    <h1 id="page-title">A still frame,<br /><span>set in motion.</span></h1>
+    <p class="hero-description">Choose an image. Describe the movement. Let Wan 2.2 resolve the rest into a short clip.</p>
+  </div>
+  <div class="hero-sigil" aria-hidden="true">
+    <svg viewBox="0 0 100 100" focusable="false">
+      <polygon points="50,6 72.4,45.5 58.1,58.1 65.3,44 50,21.3 34.7,44 41.9,58.1 27.6,45.5" />
+      <polygon points="50,56.4 57.2,63.3 50,70.2 42.8,63.3" />
+      <polygon points="22.88,54.34 28.97,56.55 6.83,94 0,93.1" />
+      <polygon points="77.12,54.34 71.03,56.55 93.17,94 100,93.1" />
+    </svg>
+    <span class="sigil-orbit"></span>
+  </div>
 </section>

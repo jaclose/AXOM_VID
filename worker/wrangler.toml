@@ -1,9 +1,9 @@
-# Wrangler config for the NiftyVid proxy Worker.
+# Wrangler config for the AXOM_VID proxy Worker.
 #
-# `pnpm wrangler deploy` reads this file. The Worker holds no secrets in this
-# version (we hit a public HF Space, no API key), so the config is short.
+# `pnpm wrangler deploy` reads this file. HF_TOKEN is stored as a Cloudflare
+# secret; this file contains only public configuration.
 
-name = "nifty-vid"
+name = "axomvidjd"
 main = "src/index.ts"
 compatibility_date = "2025-05-01"
 
@@ -13,13 +13,25 @@ compatibility_date = "2025-05-01"
 compatibility_flags = ["nodejs_compat"]
 
 # Environment variables exposed to the Worker at runtime.
-# - ALLOWED_ORIGINS controls CORS. Defaults to permissive in dev, locked down in prod.
+# - ALLOWED_ORIGINS controls CORS for the local app and Jafar's public site.
 # - HF_SPACE_BASE points at the Gradio Space we proxy to. Easy to swap if we
 #   ever move to a paid backend.
+# HF_TOKEN is a secret, added with `wrangler secret put HF_TOKEN` or in the
+# Cloudflare dashboard. It must never be entered under [vars] or committed.
 [vars]
-ALLOWED_ORIGINS = "http://localhost:4321,https://igorcsis.github.io"
+ALLOWED_ORIGINS = "http://localhost:4321,https://jaclose.github.io"
 HF_SPACE_BASE = "https://cbensimon-wan2-2-fp8da-aoti-preview2.hf.space"
 HF_FN_NAME = "generate_video"
+
+# Two submissions per minute across a Cloudflare location limit accidental
+# bursts against the site's shared Hugging Face account quota.
+[[ratelimits]]
+name = "GENERATION_RATE_LIMIT"
+namespace_id = "1001"
+
+[ratelimits.simple]
+limit = 2
+period = 60
 
 # Observability is free on Workers and saves headaches when something breaks
 # in production. `wrangler tail` will stream logs live.

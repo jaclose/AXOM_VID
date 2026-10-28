@@ -1,5 +1,5 @@
 /**
- * studio.ts, client-side wiring for the NiftyVid generator.
+ * studio.ts, client-side wiring for the AXOM_VID generator.
  *
  * Lifecycle:
  *   1. User drops or picks an image. We preview it and stash the File object.
@@ -49,7 +49,14 @@ const spinnerEl    = $<HTMLSpanElement>("[data-spinner]");
 const statusEl     = $<HTMLParagraphElement>("[data-status]");
 const resultEmpty  = $<HTMLDivElement>("[data-result-empty]");
 const resultLoad   = $<HTMLDivElement>("[data-result-loading]");
+const resultError  = $<HTMLDivElement>("[data-result-error]");
+const errorTitle   = $<HTMLElement>("[data-error-title]");
+const errorDetail  = $<HTMLElement>("[data-error-detail]");
+const retryBtn     = $<HTMLButtonElement>("[data-retry]");
+const cancelBtn    = $<HTMLButtonElement>("[data-cancel]");
+const removeBtn    = $<HTMLButtonElement>("[data-remove-image]");
 const loadingMsg   = $<HTMLParagraphElement>("[data-loading-message]");
+const elapsedEl    = $<HTMLElement>("[data-loading-elapsed]");
 const resultVideo  = $<HTMLVideoElement>("[data-result-video]");
 const downloadLink = $<HTMLAnchorElement>("[data-download]");
 const historyWrap  = $<HTMLDivElement>("[data-history-wrap]");
@@ -63,6 +70,8 @@ const historyList  = $<HTMLUListElement>("[data-history]");
 const state = {
   file: null as File | null,
   busy: false,
+  controller: null as AbortController | null,
+  cancelReason: null as "user" | "timeout" | null,
 };
 
 // ---------- File handling ----------
@@ -74,8 +83,12 @@ const state = {
  */
 function acceptFile(file: File) {
   const MAX_BYTES = 8 * 1024 * 1024; // 8 MB. HF Spaces choke on much larger uploads.
-  if (!file.type.startsWith("image/")) {
+  if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
     setStatus("That doesn't look like an image. PNG, JPG, or WEBP please.", "error");
+    return;
+  }
+  if (file.size === 0) {
+    setStatus("That image is empty. Choose another file.", "error");
     return;
   }
   if (file.size > MAX_BYTES) {
@@ -84,12 +97,15 @@ function acceptFile(file: File) {
   }
 
   state.file = file;
+  removeBtn.classList.remove("hidden");
+  if (!resultError.classList.contains("hidden")) showResultState("empty");
 
   // Show a preview by reading the file as a data URL.
   // URL.createObjectURL would be marginally faster, but a data URL means we
   // don't have to remember to revokeObjectURL later.
   const reader = new FileReader();
   reader.onload = () => {
+    if (state.file !== file) return;
     dropPreview.src = reader.result as string;
     dropPreview.classList.remove("hidden");
     dropEmpty.classList.add("hidden");
@@ -99,6 +115,19 @@ function acceptFile(file: File) {
   refreshGenerateButton();
   setStatus("Ready. Write a prompt and click generate.");
 }
+
+removeBtn.addEventListener("click", () => {
+  if (state.busy) return;
+  state.file = null;
+  fileInput.value = "";
+  dropPreview.removeAttribute("src");
+  dropPreview.classList.add("hidden");
+  dropEmpty.classList.remove("hidden");
+  removeBtn.classList.add("hidden");
+  if (!resultError.classList.contains("hidden")) showResultState("empty");
+  refreshGenerateButton();
+  setStatus("Add an image to start.");
+});
 
 // Click-to-browse (handled by the <input> being inside the <label>) just needs
 // us to listen to the file input's change event.
@@ -155,10 +184,7 @@ function refreshGenerateButton() {
 type StatusTone = "info" | "error" | "success";
 function setStatus(text: string, tone: StatusTone = "info") {
   statusEl.textContent = text;
-  statusEl.classList.remove("text-rose-400", "text-mint-glow", "text-slate-500");
-  statusEl.classList.add(
-    tone === "error" ? "text-rose-400" : tone === "success" ? "text-mint-glow" : "text-slate-500",
-  );
+  statusEl.dataset.tone = tone;
 }
 
 function setBusy(busy: boolean) {
@@ -168,95 +194,111 @@ function setBusy(busy: boolean) {
   refreshGenerateButton();
 }
 
-function showResultState(s: "empty" | "loading" | "ready") {
+function showResultState(s: "empty" | "loading" | "ready" | "error") {
   resultEmpty.classList.toggle("hidden", s !== "empty");
   resultLoad.classList.toggle("hidden", s !== "loading");
+  resultError.classList.toggle("hidden", s !== "error");
   resultVideo.classList.toggle("hidden", s !== "ready");
   downloadLink.classList.toggle("hidden", s !== "ready");
 }
 
 // ---------- Generate flow ----------
 
-generateBtn.addEventListener("click", async () => {
-  if (!state.file) return;
+generateBtn.addEventListener("click", runGeneration);
+retryBtn.addEventListener("click", runGeneration);
+cancelBtn.addEventListener("click", () => {
+  state.cancelReason = "user";
+  state.controller?.abort();
+});
+
+async function runGeneration(): Promise<void> {
+  if (!state.file || state.busy || !promptEl.value.trim()) return;
+
+  const controller = new AbortController();
+  state.controller = controller;
+  state.cancelReason = null;
+  const timeout = window.setTimeout(() => {
+    state.cancelReason = "timeout";
+    controller.abort();
+  }, 8 * 60 * 1000);
+  const stopElapsed = startElapsedTimer();
 
   setBusy(true);
   showResultState("loading");
-  setStatus("Submitting job to the GPU pool. This may take a minute or two.");
-
-  // Rotate friendly loading messages on a timer. We don't get real-time
-  // progress from the upstream Space in this design, so this is mostly a
-  // "we're still alive" signal for the user. Two minutes of "Loading..."
-  // feels broken; rotating text feels intentional.
-  const stopMessages = startLoadingMessages();
+  loadingMsg.textContent = "Uploading image and submitting the job…";
+  setStatus("Submitting to the shared GPU. You can cancel while it runs.");
+  resultVideo.pause();
 
   try {
-    // Build the multipart payload. We send the raw file plus JSON params as
-    // a single string field. The Worker parses both.
     const form = new FormData();
     form.append("image", state.file);
-    form.append(
-      "params",
-      JSON.stringify({
-        prompt: promptEl.value.trim(),
-        duration_seconds: parseFloat(durationEl.value),
-        steps: parseInt(stepsEl.value, 10),
-      }),
-    );
+    form.append("params", JSON.stringify({
+      prompt: promptEl.value.trim(),
+      duration_seconds: Number(durationEl.value),
+      steps: Number(stepsEl.value),
+    }));
 
-    // Open the streaming connection. The Worker uploads + submits, then pipes
-    // the upstream Gradio SSE through to us. We consume events as they arrive.
     const res = await fetch(`${WORKER_URL}/generate`, {
       method: "POST",
       body: form,
+      signal: controller.signal,
     });
-    if (!res.ok || !res.body) {
-      throw new Error(await readErrorMessage(res));
-    }
+    if (!res.ok || !res.body) throw new Error(await readErrorMessage(res));
 
-    const video_url = await consumeSseUntilComplete(res.body);
+    loadingMsg.textContent = "Waiting for a shared GPU…";
+    const spaceBase = res.headers.get("X-HF-Space-Base") || HF_SPACE_BASE;
+    const videoUrl = await consumeSseUntilComplete(res.body, spaceBase, (event) => {
+      if (event === "generating") loadingMsg.textContent = "Generating frames on the GPU…";
+      if (event === "estimation" || event === "pending") loadingMsg.textContent = "Waiting in the GPU queue…";
+    });
 
-    // Success.
-    resultVideo.src = video_url;
-    downloadLink.href = video_url;
-    downloadLink.setAttribute("download", `nifty-vid-${Date.now()}.mp4`);
+    resultVideo.src = videoUrl;
+    downloadLink.href = downloadUrl(videoUrl);
+    downloadLink.setAttribute("download", `axom-vid-${Date.now()}.mp4`);
     showResultState("ready");
-    setStatus("Done. Saved a thumb in history below.", "success");
-    addToHistory(video_url);
+    setStatus("Video ready. Use Download MP4 to save it.", "success");
+    addToHistory(videoUrl);
   } catch (err) {
-    // Surface the upstream message verbatim, for a single-purpose tool, the
-    // actual failure ("queue full", "Space sleeping", "image too large") is
-    // far more useful than a generic "something went wrong".
-    const msg = err instanceof Error ? err.message : String(err);
-    setStatus(`Failed: ${msg}. You can try again, long generations sometimes time out.`, "error");
-    showResultState("empty");
+    if (controller.signal.aborted && state.cancelReason === "user") {
+      showResultState("empty");
+      setStatus("Stopped waiting for this result. The GPU job may continue in the background.");
+    } else {
+      const message = state.cancelReason === "timeout"
+        ? "No result arrived after eight minutes. The shared GPU may be stalled; try again later."
+        : describeFailure(err);
+      errorTitle.textContent = "Generation stopped";
+      errorDetail.textContent = message;
+      showResultState("error");
+      setStatus("Generation stopped. See the result panel for details.", "error");
+    }
   } finally {
-    stopMessages();
+    window.clearTimeout(timeout);
+    stopElapsed();
+    state.controller = null;
+    state.cancelReason = null;
     setBusy(false);
   }
-});
+}
 
-/**
- * Rotate the loading message every few seconds so the UI doesn't look frozen.
- * Returns a stop() function that cancels the rotation, used in the finally
- * block above to clean up no matter what.
- */
-function startLoadingMessages(): () => void {
-  const messages = [
-    "Uploading image...",
-    "Waiting in the GPU queue...",
-    "Warming up Wan 2.2 weights...",
-    "Diffusing frames...",
-    "Stitching the video together...",
-    "Almost there. First runs can take a minute or two...",
-  ];
-  let i = 0;
-  loadingMsg.textContent = messages[0]!;
-  const handle = window.setInterval(() => {
-    i = Math.min(i + 1, messages.length - 1);
-    loadingMsg.textContent = messages[i]!;
-  }, 8000);
+function startElapsedTimer(): () => void {
+  const started = performance.now();
+  const update = () => {
+    const seconds = Math.floor((performance.now() - started) / 1000);
+    elapsedEl.textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  };
+  update();
+  const handle = window.setInterval(update, 1000);
   return () => window.clearInterval(handle);
+}
+
+function describeFailure(err: unknown): string {
+  const message = err instanceof Error ? err.message.trim() : String(err).trim();
+  if (err instanceof TypeError && /fetch|network/i.test(message)) {
+    return "Could not reach the video service. Check your connection and try again.";
+  }
+  return message && message !== "null" && message !== "undefined"
+    ? message
+    : "The video service stopped without an explanation. Its GPU quota or queue may be unavailable; try again later.";
 }
 
 /**
@@ -276,7 +318,11 @@ function startLoadingMessages(): () => void {
  * event, parse it, and act. Heartbeats and generating events update the
  * loading message but don't resolve.
  */
-async function consumeSseUntilComplete(stream: ReadableStream<Uint8Array>): Promise<string> {
+async function consumeSseUntilComplete(
+  stream: ReadableStream<Uint8Array>,
+  spaceBase: string,
+  onProgress: (event: string) => void,
+): Promise<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -286,12 +332,12 @@ async function consumeSseUntilComplete(stream: ReadableStream<Uint8Array>): Prom
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
 
-    // SSE event boundary is a blank line. Pull off completed events, keep the
-    // trailing partial chunk in the buffer for the next read.
-    const parts = buffer.split("\n\n");
-    buffer = parts.pop() ?? "";
-
-    for (const raw of parts) {
+    // A blank line ends an event. Keep the trailing partial event for the
+    // next read; Gradio may send either LF or CRLF line endings.
+    let boundary: RegExpExecArray | null;
+    while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
+      const raw = buffer.slice(0, boundary.index);
+      buffer = buffer.slice(boundary.index + boundary[0].length);
       const evt = parseSseEvent(raw);
       if (!evt) continue;
 
@@ -304,27 +350,18 @@ async function consumeSseUntilComplete(stream: ReadableStream<Uint8Array>): Prom
         } catch {
           throw new Error("Upstream returned malformed result payload.");
         }
-        const first = Array.isArray(payload) ? payload[0] : null;
-        const url = extractVideoUrl(first);
+        const url = Array.isArray(payload)
+          ? extractVideoUrl(payload[0], spaceBase) ?? extractVideoUrl(payload[1], spaceBase)
+          : null;
         if (!url) throw new Error("Job finished but no video URL was returned.");
         return url;
       }
 
       if (evt.name === "error") {
-        // Errors come through as a JSON string in most cases.
-        let msg = evt.data;
-        try {
-          const parsed = JSON.parse(evt.data);
-          if (typeof parsed === "string") msg = parsed;
-        } catch {
-          /* leave msg as the raw data */
-        }
-        throw new Error(msg || "Upstream reported an error.");
+        throw new Error(parseUpstreamError(evt.data));
       }
 
-      // Anything else (generating, heartbeat, estimation) is just a sign of
-      // life. We don't act on it, the rotating loading message keeps the
-      // UI feeling alive.
+      onProgress(evt.name);
     }
   }
 
@@ -337,7 +374,7 @@ async function consumeSseUntilComplete(stream: ReadableStream<Uint8Array>): Prom
 function parseSseEvent(raw: string): { name: string; data: string } | null {
   let name = "message";
   const dataLines: string[] = [];
-  for (const line of raw.split("\n")) {
+  for (const line of raw.split(/\r?\n/)) {
     if (line.startsWith("event:")) {
       name = line.slice(6).trim();
     } else if (line.startsWith("data:")) {
@@ -346,6 +383,24 @@ function parseSseEvent(raw: string): { name: string; data: string } | null {
   }
   if (dataLines.length === 0) return null;
   return { name, data: dataLines.join("\n") };
+}
+
+function parseUpstreamError(data: string): string {
+  let detail: unknown = data;
+  try {
+    detail = JSON.parse(data);
+  } catch {
+    // Some upstream versions send plain text instead of JSON.
+  }
+  if (typeof detail === "string" && detail.trim() && detail.trim() !== "null") {
+    return detail.trim();
+  }
+  if (detail && typeof detail === "object") {
+    const payload = detail as { message?: unknown; error?: unknown };
+    const message = payload.message ?? payload.error;
+    if (typeof message === "string" && message.trim()) return message.trim();
+  }
+  return "The public GPU stopped the job without details. Its quota or queue may be unavailable; try again later.";
 }
 
 // Hardcoded because the browser doesn't know the Space URL and we'd rather
@@ -358,17 +413,21 @@ const HF_SPACE_BASE = "https://cbensimon-wan2-2-fp8da-aoti-preview2.hf.space";
  * in FileData objects with `url` and `path`; older code returns bare strings.
  * Belt-and-suspenders so a Gradio upgrade upstream doesn't silently break us.
  */
-function extractVideoUrl(fileData: unknown): string | null {
+function extractVideoUrl(fileData: unknown, spaceBase: string): string | null {
   if (!fileData) return null;
   if (typeof fileData === "string") {
-    return `${HF_SPACE_BASE}/gradio_api/file=${fileData}`;
+    return `${spaceBase}/gradio_api/file=${fileData}`;
   }
   if (typeof fileData === "object") {
     const f = fileData as { url?: string; path?: string };
     if (f.url) return f.url;
-    if (f.path) return `${HF_SPACE_BASE}/gradio_api/file=${f.path}`;
+    if (f.path) return `${spaceBase}/gradio_api/file=${f.path}`;
   }
   return null;
+}
+
+function downloadUrl(videoUrl: string): string {
+  return `${WORKER_URL}/download?url=${encodeURIComponent(videoUrl)}`;
 }
 
 /**
@@ -392,27 +451,31 @@ async function readErrorMessage(res: Response): Promise<string> {
 function addToHistory(url: string) {
   historyWrap.classList.remove("hidden");
   const li = document.createElement("li");
-  li.className =
-    "shrink-0 rounded-md border border-ink-700 overflow-hidden cursor-pointer hover:border-mint-dim transition";
+  li.className = "shrink-0";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "history-item";
+  button.setAttribute("aria-label", `Show generated clip ${historyList.children.length + 1}`);
   const v = document.createElement("video");
   v.src = url;
   v.muted = true;
   v.loop = true;
   v.playsInline = true;
-  v.className = "w-32 h-20 object-cover";
+  v.className = "history-video";
   // Show a frame on hover. Cheap UX win, no thumbnailing required.
-  li.addEventListener("mouseenter", () => v.play().catch(() => {}));
-  li.addEventListener("mouseleave", () => {
+  button.addEventListener("mouseenter", () => v.play().catch(() => {}));
+  button.addEventListener("mouseleave", () => {
     v.pause();
     v.currentTime = 0;
   });
   // Click to bring it back into the main result slot.
-  li.addEventListener("click", () => {
+  button.addEventListener("click", () => {
     resultVideo.src = url;
-    downloadLink.href = url;
+    downloadLink.href = downloadUrl(url);
     showResultState("ready");
   });
-  li.appendChild(v);
+  button.appendChild(v);
+  li.appendChild(button);
   historyList.prepend(li);
 }
 
