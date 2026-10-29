@@ -17,6 +17,8 @@ echo "AXOM_VID · Local Mac mode"
 echo "No paid API keys or cloud-run allowances are used in local mode."
 echo "Phosphene (free software) must already be running on 127.0.0.1:8198."
 echo "Project folder: $ROOT"
+echo "After Phosphene finishes, verify both engines using:"
+echo "  python3 $ROOT/local/acceptance.py"
 echo ""
 
 run_pnpm() {
