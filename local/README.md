@@ -32,7 +32,7 @@ This uses local image-to-video inference, not an unlimited free cloud GPU. On an
 
    `git switch main` and `bash local/start.command` **do not work from `~`** because `~` is not the repository. The start script builds the site and starts the local HTTP server; opening localhost before this step results in connection refused.
 
-6. The studio opens at http://127.0.0.1:8765/AXOM_VID/. Select Local Mac and upload an image. Try a 3-second Quick clip first. The prompt stays local.
+6. The launcher opens the studio at the **actual available port**. It tries `http://127.0.0.1:8765/AXOM_VID/` first, then 8766–8775 if another app owns the default. Use the printed URL; do not assume 8765 is available. Select Local Mac and upload an image. Try a 3-second Quick clip first. The prompt stays local.
 
 7. Advanced options support 3, 5, 7 or 10 seconds per pass, and 30, 45, 60, 90 or 120-second **chained takes**. These use Phosphene's documented `take_seconds` API and can take hours on 18 GB hardware. Choose 1–6 queued variations; each is processed sequentially. The optional prompt-variation box expects one line per generation.
 
@@ -41,7 +41,7 @@ This uses local image-to-video inference, not an unlimited free cloud GPU. On an
 9. FFmpeg is needed to make GIFs. The launcher uses an existing FFmpeg if available, otherwise creates a small Python environment **inside the AXOM_VID checkout on the SSD** and installs the free Apple Silicon `imageio-ffmpeg==0.7.0` wheel. MP4s still work if that small download fails. No changes to Phosphene's installation are required.
 7. If the browser reports Local renderer offline, start Phosphene and press Check local engine.
 
-The local bridge uses only Python's standard library and never downloads a second model. It binds to 127.0.0.1 only, serves the existing Astro frontend from web/dist, and forwards jobs to the locally running Phosphene panel. The webpage cannot remotely generate on your laptop when its local server is not running.
+If you previously saw `OSError: [Errno 48] Address already in use`, another process owns the port. The updated launcher automatically selects a different available port without killing that process. To inspect the original listener safely, run `lsof -nP -iTCP:8765 -sTCP:LISTEN`. A 404 from 8765 does not mean AXOM_VID is serving there; check the URL printed by the launcher. The local bridge uses only Python's standard library and never downloads a second model. It binds to 127.0.0.1 only, serves the existing Astro frontend from web/dist, and forwards jobs to the locally running Phosphene panel. The webpage cannot remotely generate on your laptop when its local server is not running.
 
 ## Model and storage details
 

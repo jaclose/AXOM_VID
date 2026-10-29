@@ -10,6 +10,7 @@ Phosphene API: https://github.com/mrbizarro/Phosphene/blob/main/docs/API.md
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -608,17 +609,67 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
                     break
                 remaining -= len(chunk)
 
+def create_server_with_fallback(
+    *, start_port: int, attempts: int, static_root: Path,
+    phosphene_url: str = DEFAULT_PHOSPHENE_URL,
+) -> LocalVideoServer:
+    """Bind the first available loopback port without affecting other services.
+
+    Only EADDRINUSE can trigger a fallback. Do not hide permissions, invalid
+    configuration, or other genuine startup failures by scanning more ports.
+    The CLI restricts fallback to the ports supported by the local frontend.
+    """
+    if not (1 <= start_port <= 65535) or not (1 <= attempts <= 16):
+        raise ValueError("Invalid local port range.")
+    last_error: OSError | None = None
+    for port in range(start_port, min(65536, start_port + attempts)):
+        try:
+            return LocalVideoServer(
+                ("127.0.0.1", port), LocalVideoHandler,
+                static_root=static_root, phosphene_url=phosphene_url,
+            )
+        except OSError as error:
+            if error.errno != errno.EADDRINUSE:
+                raise
+            last_error = error
+    raise OSError(
+        errno.EADDRINUSE,
+        f"All AXOM_VID loopback ports {start_port}–{start_port + attempts - 1} are in use.",
+    ) from last_error
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run AXOM_VID with no metered cloud GPU.")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--phosphene", default=os.getenv("PHOSPHENE_URL", DEFAULT_PHOSPHENE_URL))
     parser.add_argument("--open", action="store_true", help="Open the local studio in a browser.")
     args = parser.parse_args()
+    if not (8765 <= args.port <= 8775):
+        parser.error("Local studio ports must be in the range 8765–8775.")
+
     root = Path(__file__).resolve().parent.parent / "web" / "dist"
-    server = LocalVideoServer(("127.0.0.1", args.port), LocalVideoHandler,
-                              static_root=root, phosphene_url=args.phosphene)
-    address = f"http://127.0.0.1:{args.port}"
-    print("AXOM_VID Local Studio: " + address, flush=True)
+    try:
+        server = create_server_with_fallback(
+            start_port=args.port, attempts=8776 - args.port,
+            static_root=root, phosphene_url=args.phosphene,
+        )
+    except OSError as error:
+        if error.errno == errno.EADDRINUSE:
+            parser.exit(
+                2,
+                "AXOM_VID cannot start: all local ports 8765–8775 are occupied.\n"
+                "Inspect existing listeners with: lsof -nP -iTCP -sTCP:LISTEN\n"
+                "Do not terminate an unknown process.\n",
+            )
+        raise
+    address = f"http://127.0.0.1:{server.server_port}"
+    if server.server_port != args.port:
+        print(
+            f"Port {args.port} is in use by another application; "
+            f"AXOM_VID selected {server.server_port} instead.",
+            flush=True,
+        )
+    print("AXOM_VID Local Studio: " + address + "/AXOM_VID/", flush=True)
     print("No cloud GPU quota, no paid API key. Phosphene must be running on localhost:8198.", flush=True)
     if args.open:
         import webbrowser
