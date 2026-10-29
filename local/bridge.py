@@ -10,6 +10,7 @@ Phosphene API: https://github.com/mrbizarro/Phosphene/blob/main/docs/API.md
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -208,6 +209,7 @@ class LocalVideoServer(ThreadingHTTPServer):
         self.state_file = self.static_root.parent / ".axom-local-state" / "jobs.json"
         self.jobs: dict[str, float] = {}
         self.job_lock = threading.Lock()
+        self.gif_lock = threading.Lock()
         try:
             payload = json.loads(self.state_file.read_text(encoding="utf-8"))
             if isinstance(payload, dict):
@@ -322,6 +324,9 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
                 return
             if route.path == "/local/status":
                 self._handle_status(parse_qs(route.query).get("jobId", [""])[0])
+                return
+            if route.path == "/local/gif":
+                self._handle_gif(parse_qs(route.query))
                 return
             if route.path == "/local/video":
                 self._handle_video(
@@ -468,6 +473,89 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
             error = job.get("error")
             out["error"] = error[:400] if isinstance(error, str) else "Local render stopped."
         self._json(out)
+
+    def _handle_gif(self, query: dict[str, list[str]]) -> None:
+        job_id = query.get("jobId", [""])[0]
+        # Reject unregistered jobs before any file access or subprocess invocation.
+        self._known_job(job_id)
+        try:
+            seconds = int(query.get("seconds", ["10"])[0])
+            fps = int(query.get("fps", ["12"])[0])
+            width = int(query.get("width", ["480"])[0])
+        except (ValueError, IndexError):
+            raise BridgeFailure("Invalid GIF export options.", 400)
+        if seconds not in (3, 5, 10, 15) or fps not in (8, 12, 15) or width not in (320, 480, 640):
+            raise BridgeFailure("GIF duration, frame rate, or width is unsupported.", 400)
+        job = self._get_job(job_id)
+        if job is None or job.get("status") != "done":
+            raise BridgeFailure("Finish the video before exporting a GIF.", 409)
+        source = safe_video_path(job)
+        if source is None:
+            raise BridgeFailure("The video file is missing or is outside the owned output directory.", 404)
+
+        ffmpeg = os.environ.get("AXOM_FFMPEG") or shutil.which("ffmpeg")
+        if not ffmpeg or not os.access(ffmpeg, os.X_OK):
+            raise BridgeFailure(
+                "FFmpeg is required for GIF downloads. Put FFmpeg on the external SSD "
+                "and set AXOM_FFMPEG to its executable path before launching the studio.", 503
+            )
+        sig = hashlib.sha256(
+            f"{job_id}:{source.stat().st_mtime_ns}:{seconds}:{fps}:{width}".encode()
+        ).hexdigest()[:24]
+        cache_dir = self.server.state_file.parent / "gifs"
+        cache_path = cache_dir / (sig + ".gif")
+        with self.server.gif_lock:
+            if not cache_path.is_file():
+                try:
+                    cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+                except OSError as err:
+                    raise BridgeFailure("GIF cache is not writable. Check the SSD.", 507) from err
+                with tempfile.NamedTemporaryFile(
+                    dir=cache_dir, prefix=".gif-", suffix=".gif", delete=False,
+                ) as staging:
+                    temp_path = Path(staging.name)
+                try:
+                    filters = (
+                        f"fps={fps},scale={width}:-2:flags=lanczos,split[palettein][gifin];"
+                        "[palettein]palettegen=stats_mode=diff[palette];"
+                        "[gifin][palette]paletteuse=dither=bayer:bayer_scale=3"
+                    )
+                    result = subprocess.run(
+                        [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                         "-threads", "2", "-t", str(seconds), "-i", str(source),
+                         "-filter_complex", filters, "-loop", "0", "-an",
+                         "-f", "gif", str(temp_path)],
+                        capture_output=True, timeout=600, check=False,
+                    )
+                    if result.returncode != 0 or not temp_path.is_file() or temp_path.stat().st_size < 6:
+                        raise BridgeFailure(
+                            "FFmpeg could not convert this MP4 to GIF. Check the video and SSD space.", 502
+                        )
+                    with temp_path.open("rb") as gif:
+                        if gif.read(6) not in (b"GIF89a", b"GIF87a"):
+                            raise BridgeFailure("FFmpeg returned a file that was not a valid GIF.", 502)
+                    temp_path.replace(cache_path)
+                except subprocess.TimeoutExpired as err:
+                    raise BridgeFailure("GIF conversion exceeded ten minutes. Select a shorter GIF.", 504) from err
+                except OSError as err:
+                    raise BridgeFailure("Unable to write the GIF to the SSD.", 507) from err
+                finally:
+                    temp_path.unlink(missing_ok=True)
+
+        size = cache_path.stat().st_size
+        self.send_response(200)
+        self.send_header("Content-Type", "image/gif")
+        self.send_header("Content-Length", str(size))
+        self.send_header("Content-Disposition", f'attachment; filename="axom-{job_id[:24]}.gif"')
+        self.send_header("Cache-Control", "private, no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        with cache_path.open("rb") as gif:
+            while chunk := gif.read(256 * 1024):
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    break
 
     def _handle_video(self, job_id: str, download: bool) -> None:
         job = self._get_job(job_id)
