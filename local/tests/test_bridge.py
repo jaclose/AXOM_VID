@@ -6,6 +6,8 @@ Run: python3 -m unittest discover -s local/tests -v
 import io
 import json
 import os
+import shutil
+import subprocess
 from unittest.mock import patch
 import tempfile
 import threading
@@ -273,6 +275,27 @@ class LocalBridgeTests(unittest.TestCase):
         self.assertTrue(data.startswith(b"GIF89a"))
         self.assertEqual(headers["Content-Type"], "image/gif")
         self.assertIn("attachment", headers["Content-Disposition"])
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg not installed on test runner")
+    def test_actual_ffmpeg_converts_synthetic_mp4_to_gif(self):
+        original = MockPhosphene.result_file.read_bytes()
+        try:
+            subprocess.run([
+                shutil.which("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "testsrc=duration=2:size=320x180:rate=24",
+                "-c:v", "mpeg4", "-q:v", "5",
+                str(MockPhosphene.result_file),
+            ], check=True, capture_output=True)
+            body, ctype = self._form()
+            with self._post("/local/generate", body, ctype) as response:
+                job_id = json.load(response)["jobId"]
+            status, data, headers = self._get("/local/gif?jobId=" + job_id +
+                                              "&seconds=3&fps=12&width=320")
+            self.assertEqual(status, 200)
+            self.assertEqual(data[:6], b"GIF89a")
+            self.assertGreater(len(data), 1024)
+        finally:
+            MockPhosphene.result_file.write_bytes(original)
 
     def test_unknown_gif_and_invalid_settings_rejected(self):
         for suffix in ("jobId=../../secret&seconds=5", "jobId=j-not-owned&seconds=5",
