@@ -5,6 +5,8 @@ Run: python3 -m unittest discover -s local/tests -v
 """
 import io
 import json
+import os
+from unittest.mock import patch
 import tempfile
 import threading
 import unittest
@@ -26,6 +28,8 @@ class MockPhosphene(BaseHTTPRequestHandler):
     result_file = None
     seen_params = None
     submission_count = 0
+    seen_submissions = []
+    job_ids = []
 
     def log_message(self, *args):
         pass
@@ -47,8 +51,11 @@ class MockPhosphene(BaseHTTPRequestHandler):
             self._json({"path": "/tmp/panel_uploads/test.png"})
         elif self.path == "/queue/add":
             MockPhosphene.seen_params = parse_qs(data.decode())
+            MockPhosphene.seen_submissions.append(MockPhosphene.seen_params)
             MockPhosphene.submission_count += 1
-            self._json({"ok": True, "id": "j-local-test-123"})
+            job_id = "j-local-test-" + str(MockPhosphene.submission_count)
+            MockPhosphene.job_ids.append(job_id)
+            self._json({"ok": True, "id": job_id})
         else:
             self.send_error(404)
 
@@ -58,12 +65,10 @@ class MockPhosphene(BaseHTTPRequestHandler):
                 "running": False,
                 "current": None,
                 "queue": [],
-                "history": [{
-                    "id": "j-local-test-123",
-                    "status": "done",
-                    "output_path": str(MockPhosphene.result_file),
-                    "elapsed_sec": 12,
-                }],
+                "history": [{"id": job_id, "status": "done",
+                             "output_path": str(MockPhosphene.result_file),
+                             "elapsed_sec": 12}
+                            for job_id in MockPhosphene.job_ids],
             })
         else:
             self.send_error(404)
@@ -112,10 +117,11 @@ class LocalBridgeTests(unittest.TestCase):
         ))
 
     def _form(self, image=PNG, prompt="A golden retriever runs through wildflowers", duration=3,
-              orientation="landscape"):
+              orientation="landscape", batch=1, variants=None):
         boundary = "AXOMBOUNDARY123"
         settings = json.dumps({"prompt": prompt, "duration_seconds": duration,
-                               "orientation": orientation}).encode()
+                               "orientation": orientation, "batch_count": batch,
+                               "prompts": variants}).encode()
         parts = [
             b"--" + boundary.encode() + b"\r\n"
             b'Content-Disposition: form-data; name="image"; filename="frame.png"\r\n'
@@ -141,7 +147,7 @@ class LocalBridgeTests(unittest.TestCase):
         with self._post("/local/generate", body, ctype) as res:
             payload = json.loads(res.read())
             self.assertEqual(res.status, 200)
-            self.assertEqual(payload["jobId"], "j-local-test-123")
+            self.assertTrue(payload["jobId"].startswith("j-local-test-"))
         fields = MockPhosphene.seen_params
         self.assertEqual(fields["mode"], ["i2v"])
         self.assertEqual(fields["quality"], ["quick"])
@@ -154,12 +160,13 @@ class LocalBridgeTests(unittest.TestCase):
         body, ctype = self._form()
         with self._post("/local/generate", body, ctype) as submitted:
             self.assertEqual(submitted.status, 200)
-        status, body, _ = self._get("/local/status?jobId=j-local-test-123")
+            job_id = json.loads(submitted.read())["jobId"]
+        status, body, _ = self._get("/local/status?jobId=" + job_id)
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["status"], "done")
         self.assertEqual(json.loads(body)["videoUrl"],
-                         "/local/video?jobId=j-local-test-123")
-        status, data, headers = self._get("/local/video?jobId=j-local-test-123")
+                         "/local/video?jobId=" + job_id)
+        status, data, headers = self._get("/local/video?jobId=" + job_id)
         self.assertEqual(status, 200)
         self.assertIn(b"ftypmp42", data)
         self.assertTrue(headers["Content-Type"].startswith("video/mp4"))
@@ -191,6 +198,81 @@ class LocalBridgeTests(unittest.TestCase):
         with self.assertRaises(HTTPError) as raised:
             self._post("/local/generate", body, ctype)
         self.assertEqual(raised.exception.code, 400)
+
+
+    def test_seven_and_ten_second_clips_submit_valid_frame_counts(self):
+        for duration, frames in ((7, "169"), (10, "241")):
+            with self.subTest(duration=duration):
+                body, content_type = self._form(duration=duration)
+                with self._post("/local/generate", body, content_type) as response:
+                    self.assertEqual(response.status, 200)
+                self.assertEqual(MockPhosphene.seen_params["frames"], [frames])
+                self.assertNotIn("take_seconds", MockPhosphene.seen_params)
+
+    def test_long_takes_are_chained_using_official_phosphene_api(self):
+        for duration in (30, 45, 60, 90, 120):
+            with self.subTest(duration=duration):
+                body, ctype = self._form(duration=duration)
+                with self._post("/local/generate", body, ctype) as response:
+                    self.assertEqual(response.status, 200)
+                self.assertEqual(MockPhosphene.seen_params["take_seconds"], [str(duration)])
+
+    def test_batch_supports_distinct_prompts_and_ids(self):
+        start = len(MockPhosphene.seen_submissions)
+        variations = ["Flowers blow in the wind", "Camera slowly orbits", "Clouds drift overhead"]
+        body, ctype = self._form(batch=3, variants=variations)
+        with self._post("/local/generate", body, ctype) as response:
+            result = json.load(response)
+        self.assertEqual(len(result["jobIds"]), 3)
+        self.assertEqual(len(set(result["jobIds"])), 3)
+        self.assertEqual([f["prompt"][0] for f in MockPhosphene.seen_submissions[start:]], variations)
+
+    def test_batch_limit_rejected_without_submitting(self):
+        before = MockPhosphene.submission_count
+        body, ctype = self._form(batch=7)
+        with self.assertRaises(HTTPError) as caught:
+            self._post("/local/generate", body, ctype)
+        self.assertEqual(caught.exception.code, 400)
+        self.assertEqual(MockPhosphene.submission_count, before)
+
+    def test_gif_export_from_registered_video(self):
+        body, ctype = self._form()
+        with self._post("/local/generate", body, ctype) as response:
+            job_id = json.load(response)["jobId"]
+        fake = self.root / "fake_ffmpeg"
+        fake.write_text('#!/usr/bin/env python3\nimport sys\nfrom pathlib import Path\n'
+                        'Path(sys.argv[-1]).write_bytes(b"GIF89a" + b"test-data")\n')
+        fake.chmod(0o700)
+        with patch.dict(os.environ, {"AXOM_FFMPEG": str(fake)}):
+            status, data, headers = self._get("/local/gif?jobId=" + job_id +
+                                              "&seconds=5&fps=12&width=480")
+        self.assertEqual(status, 200)
+        self.assertTrue(data.startswith(b"GIF89a"))
+        self.assertEqual(headers["Content-Type"], "image/gif")
+        self.assertIn("attachment", headers["Content-Disposition"])
+
+    def test_unknown_gif_and_invalid_settings_rejected(self):
+        for suffix in ("jobId=../../secret&seconds=5", "jobId=j-not-owned&seconds=5",
+                       "jobId=j-not-owned&seconds=999"):
+            with self.subTest(suffix=suffix):
+                with self.assertRaises(HTTPError) as caught:
+                    self._get("/local/gif?" + suffix)
+                self.assertIn(caught.exception.code, (400, 404))
+
+    def test_jobs_recover_after_local_bridge_restart(self):
+        body, ctype = self._form()
+        with self._post("/local/generate", body, ctype) as response:
+            job_id = json.load(response)["jobId"]
+        state_file = self.root / ".axom-local-state" / "jobs.json"
+        self.assertTrue(state_file.exists())
+        with state_file.open() as record:
+            self.assertIn(job_id, json.load(record))
+        fresh = LocalVideoServer(("127.0.0.1", 0), LocalVideoHandler,
+                                 static_root=self.root, phosphene_url=self.upstream_url)
+        try:
+            self.assertIn(job_id, fresh.jobs)
+        finally:
+            fresh.server_close()
 
 
 if __name__ == "__main__":
