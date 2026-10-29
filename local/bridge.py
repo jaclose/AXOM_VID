@@ -1,0 +1,443 @@
+#!/usr/bin/env python3
+"""AXOM_VID free local image-to-video bridge (standard library only).
+
+The bridge runs on loopback, serves the already-built Astro frontend, and
+talks solely to the locally running Phosphene panel. It has no paid API keys,
+cloud inference calls, or daily account quota.
+
+Phosphene API: https://github.com/mrbizarro/Phosphene/blob/main/docs/API.md
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import secrets
+import threading
+import time
+from email import policy
+from email.parser import BytesParser
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.request import Request, urlopen
+
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_UPLOAD_BYTES = MAX_IMAGE_BYTES + 32 * 1024
+MAX_PROMPT = 1200
+DEFAULT_PHOSPHENE_URL = "http://127.0.0.1:8198"
+ALLOWED_IMAGE_TYPES = {
+    "image/png": (b"\x89PNG\r\n\x1a\n", "png"),
+    "image/jpeg": (b"\xff\xd8\xff", "jpg"),
+    "image/webp": (b"RIFF", "webp"),
+}
+
+
+class BridgeFailure(Exception):
+    def __init__(self, message: str, status: int = 502):
+        super().__init__(message)
+        self.status = status
+
+
+def _json_response_from_upstream(
+    base_url: str, route: str, *, body: bytes | None = None,
+    content_type: str | None = None,
+) -> dict[str, Any]:
+    headers: dict[str, str] = {}
+    if content_type:
+        headers["Content-Type"] = content_type
+    req = Request(base_url + route, data=body, headers=headers,
+                  method="POST" if body is not None else "GET")
+    try:
+        with urlopen(req, timeout=30) as response:
+            data = response.read(8 * 1024 * 1024 + 1)
+            if len(data) > 8 * 1024 * 1024:
+                raise BridgeFailure("Local engine returned an oversized response.")
+    except HTTPError as err:
+        try:
+            payload = json.loads(err.read(4096))
+            message = payload.get("error", "Local engine request failed")
+            if not isinstance(message, str):
+                message = "Local engine request failed"
+        except (ValueError, UnicodeError):
+            message = "Local engine returned HTTP " + str(err.code)
+        raise BridgeFailure(message[:500], err.code) from err
+    except (OSError, URLError) as err:
+        raise BridgeFailure(
+            "Phosphene is not running. Open Pinokio, start Phosphene, "
+            "and open its panel at http://127.0.0.1:8198.", 503,
+        ) from err
+
+    try:
+        result = json.loads(data)
+    except (ValueError, UnicodeError) as err:
+        raise BridgeFailure("Local engine returned invalid JSON.") from err
+    if not isinstance(result, dict):
+        raise BridgeFailure("Local engine returned an unexpected response.")
+    return result
+
+
+def parse_form(data: bytes, content_type: str) -> tuple[bytes, str, dict[str, Any]]:
+    if not content_type.lower().startswith("multipart/form-data;") or "\n" in content_type:
+        raise BridgeFailure("Expected multipart image upload.", 415)
+    preamble = ("MIME-Version: 1.0\r\nContent-Type: " + content_type +
+                "\r\n\r\n").encode("ascii", errors="strict")
+    message = BytesParser(policy=policy.default).parsebytes(preamble + data)
+    if not message.is_multipart():
+        raise BridgeFailure("Invalid multipart form.", 400)
+    parts: dict[str, tuple[bytes, str]] = {}
+    for part in message.iter_parts():
+        if part.get_content_disposition() != "form-data":
+            continue
+        name = part.get_param("name", header="Content-Disposition")
+        if name not in ("image", "params") or name in parts:
+            raise BridgeFailure("Unexpected or duplicate form field.", 400)
+        content = part.get_payload(decode=True)
+        if not isinstance(content, bytes):
+            raise BridgeFailure("Invalid upload field.", 400)
+        parts[name] = (content, part.get_content_type())
+
+    if "image" not in parts or "params" not in parts:
+        raise BridgeFailure("Choose an image and enter a motion prompt.", 400)
+    image, mime = parts["image"]
+    if not (0 < len(image) <= MAX_IMAGE_BYTES):
+        raise BridgeFailure("Image must be between 1 byte and 8 MB.", 413)
+    marker = ALLOWED_IMAGE_TYPES.get(mime)
+    if marker is None or not image.startswith(marker[0]):
+        raise BridgeFailure("Use a valid PNG, JPG or WEBP image.", 415)
+    if mime == "image/webp" and image[8:12] != b"WEBP":
+        raise BridgeFailure("Invalid WEBP image.", 415)
+    try:
+        settings = json.loads(parts["params"][0])
+    except (ValueError, UnicodeError) as err:
+        raise BridgeFailure("Invalid generation settings.", 400) from err
+    if not isinstance(settings, dict):
+        raise BridgeFailure("Invalid generation settings.", 400)
+    prompt = settings.get("prompt")
+    if not isinstance(prompt, str) or not (1 <= len(prompt.strip()) <= MAX_PROMPT):
+        raise BridgeFailure("Enter a motion prompt of 1 to 1,200 characters.", 400)
+    seconds = settings.get("duration_seconds")
+    if seconds not in (3, 5) or isinstance(seconds, bool):
+        raise BridgeFailure("Local clips support 3 or 5 seconds.", 400)
+    if settings.get("orientation") not in ("landscape", "portrait"):
+        raise BridgeFailure("Choose portrait or landscape orientation.", 400)
+    return image, mime, settings
+
+
+def multipart_image(image: bytes, mime: str) -> tuple[bytes, str]:
+    boundary = "AXOM" + secrets.token_hex(16)
+    ext = ALLOWED_IMAGE_TYPES[mime][1]
+    raw = (
+        ("--" + boundary + "\r\n"
+         'Content-Disposition: form-data; name="image"; filename="source.' + ext + '"\r\n'
+         "Content-Type: " + mime + "\r\n\r\n").encode()
+        + image + ("\r\n--" + boundary + "--\r\n").encode()
+    )
+    return raw, "multipart/form-data; boundary=" + boundary
+
+
+def find_job(status: dict[str, Any], job_id: str) -> dict[str, Any] | None:
+    for key in ("current", "queue", "history"):
+        value = status.get(key)
+        if isinstance(value, dict):
+            value = [value]
+        if not isinstance(value, list):
+            continue
+        for job in value:
+            if isinstance(job, dict) and job.get("id") == job_id:
+                return job
+    return None
+
+
+def safe_video_path(job: dict[str, Any]) -> Path | None:
+    raw = job.get("output_path")
+    if not isinstance(raw, str):
+        return None
+    path = Path(raw)
+    # Only Phosphene-generated MP4s under its owned output directory.
+    if not path.is_absolute() or "mlx_outputs" not in path.parts or path.suffix.lower() != ".mp4":
+        return None
+    try:
+        # Pinokio may symlink mlx_outputs to an external SSD. Resolve the
+        # expected output directory and require the file to remain inside it.
+        idx = path.parts.index("mlx_outputs")
+        outputs_root = Path(*path.parts[:idx + 1]).resolve(strict=True)
+        resolved = path.resolve(strict=True)
+        if not resolved.is_file() or not resolved.is_relative_to(outputs_root):
+            return None
+        return resolved
+    except (OSError, ValueError):
+        return None
+
+
+class LocalVideoServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(
+        self, server_address: tuple[str, int], handler: type[LocalVideoHandler],
+        *, static_root: Path, phosphene_url: str = DEFAULT_PHOSPHENE_URL,
+    ):
+        url = urlsplit(phosphene_url)
+        if (url.scheme != "http" or url.hostname not in ("127.0.0.1", "localhost")
+                or url.username or url.password or url.path not in ("", "/")
+                or url.query or url.fragment):
+            raise ValueError("Phosphene URL must be an HTTP loopback server.")
+        self.phosphene_url = phosphene_url.rstrip("/")
+        self.static_root = Path(static_root).resolve()
+        self.jobs: dict[str, float] = {}
+        self.job_lock = threading.Lock()
+        super().__init__(server_address, handler)
+
+
+class LocalVideoHandler(SimpleHTTPRequestHandler):
+    server: LocalVideoServer
+
+    def __init__(self, *args: Any, **kwargs: Any):
+        # Files are always served from web/dist, never from a personal folder.
+        super().__init__(*args, directory=str(args[2].static_root), **kwargs)
+
+    def log_message(self, format: str, *args: Any) -> None:
+        # Never log image bytes or prompts.
+        super().log_message(format, *args)
+
+    def _json(self, payload: dict[str, Any], status: int = 200) -> None:
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _fail(self, message: str, status: int) -> None:
+        self._json({"error": message}, status)
+
+    def _allowed_request(self) -> bool:
+        # A local service should never be accessible through DNS rebinding
+        # or writable from a hostile website's cross-origin form submission.
+        expected_port = self.server.server_port
+        host = self.headers.get("Host", "")
+        if host not in (f"127.0.0.1:{expected_port}", f"localhost:{expected_port}"):
+            self._fail("Only localhost may open the local video studio.", 403)
+            return False
+        origin = self.headers.get("Origin")
+        if origin and origin not in (
+            f"http://127.0.0.1:{expected_port}", f"http://localhost:{expected_port}"
+        ):
+            self._fail("Another website cannot submit local GPU jobs.", 403)
+            return False
+        if self.headers.get("Sec-Fetch-Site") == "cross-site":
+            self._fail("Cross-site access to the local GPU is blocked.", 403)
+            return False
+        return True
+
+    def translate_path(self, path: str) -> str:
+        # Production Astro bundles live under /AXOM_VID/ for GitHub Pages.
+        # Serve the same files locally without rebuilding a second bundle.
+        url_path = urlsplit(path).path
+        if url_path in ("/AXOM_VID", "/AXOM_VID/"):
+            path = "/"
+        elif url_path.startswith("/AXOM_VID/"):
+            path = url_path[len("/AXOM_VID"):]
+        return super().translate_path(path)
+
+    def do_OPTIONS(self) -> None:
+        # No cross-origin API is offered. The local app calls its own origin.
+        self._fail("Use the local studio at http://127.0.0.1:8765.", 403)
+
+    def do_GET(self) -> None:
+        if not self._allowed_request():
+            return
+        route = urlsplit(self.path)
+        try:
+            if route.path == "/local/health":
+                try:
+                    status = _json_response_from_upstream(self.server.phosphene_url, "/status")
+                    self._json({
+                        "online": True,
+                        "busy": isinstance(status.get("current"), dict),
+                        "queued": len(status.get("queue", [])) if isinstance(status.get("queue"), list) else 0,
+                        "provider": "Phosphene LTX local",
+                    })
+                except BridgeFailure as err:
+                    self._json({"online": False, "error": str(err)})
+                return
+            if route.path == "/local/status":
+                self._handle_status(parse_qs(route.query).get("jobId", [""])[0])
+                return
+            if route.path == "/local/video":
+                self._handle_video(
+                    parse_qs(route.query).get("jobId", [""])[0],
+                    parse_qs(route.query).get("download", [""])[0] == "1",
+                )
+                return
+            if route.path.startswith("/local/"):
+                self._fail("Local endpoint not found.", 404)
+                return
+            if not (self.server.static_root / "index.html").exists():
+                self._fail("Website not built. Run local/start.command from the repository.", 503)
+                return
+            return super().do_GET()
+        except BridgeFailure as err:
+            self._fail(str(err), err.status)
+
+    def do_POST(self) -> None:
+        if not self._allowed_request():
+            return
+        if urlsplit(self.path).path != "/local/generate":
+            self._fail("Local endpoint not found.", 404)
+            return
+        try:
+            raw_length = self.headers.get("Content-Length", "")
+            if not raw_length.isdecimal():
+                raise BridgeFailure("Upload is missing a valid size.", 400)
+            length = int(raw_length)
+            if length > MAX_UPLOAD_BYTES:
+                raise BridgeFailure("Image upload is over 8 MB.", 413)
+            if length <= 0:
+                raise BridgeFailure("Empty upload.", 400)
+            raw = self.rfile.read(length)
+            if len(raw) != length:
+                raise BridgeFailure("Image upload was incomplete.", 400)
+            image, mime, settings = parse_form(raw, self.headers.get("Content-Type", ""))
+            upload_body, upload_type = multipart_image(image, mime)
+            uploaded = _json_response_from_upstream(
+                self.server.phosphene_url, "/upload", body=upload_body,
+                content_type=upload_type,
+            )
+            image_path = uploaded.get("path")
+            if (not isinstance(image_path, str) or not Path(image_path).is_absolute()
+                    or "panel_uploads" not in Path(image_path).parts):
+                raise BridgeFailure("Phosphene did not accept the reference image.")
+
+            portrait = settings["orientation"] == "portrait"
+            seconds = settings["duration_seconds"]
+            args = {
+                "mode": "i2v",
+                "engine": "ltx",
+                "prompt": settings["prompt"].strip(),
+                "image": image_path,
+                "width": "288" if portrait else "512",
+                "height": "512" if portrait else "288",
+                "frames": str(seconds * 24 + 1),
+                "frame_rate": "24",
+                "steps": "8",
+                "seed": "-1",
+                "quality": "quick",
+                "temporal_mode": "native",
+                "upscale": "off",
+                "enhance": "false",
+                "open_when_done": "off",
+                "label": "AXOM_VID local image animation",
+            }
+            queued = _json_response_from_upstream(
+                self.server.phosphene_url, "/queue/add",
+                body=urlencode(args).encode(),
+                content_type="application/x-www-form-urlencoded",
+            )
+            job_id = queued.get("id")
+            if not queued.get("ok") or not isinstance(job_id, str) or not re.fullmatch(r"j-[a-zA-Z0-9-]{1,100}", job_id):
+                raise BridgeFailure("Phosphene did not return a valid job ID.")
+            with self.server.job_lock:
+                # Retain only recent session jobs to prevent unbounded memory use.
+                if len(self.server.jobs) >= 100:
+                    oldest = min(self.server.jobs, key=self.server.jobs.get)
+                    del self.server.jobs[oldest]
+                self.server.jobs[job_id] = time.monotonic()
+            self._json({"jobId": job_id, "status": "queued"})
+        except BridgeFailure as err:
+            self._fail(str(err), err.status)
+        except (UnicodeError, ValueError) as err:
+            self._fail("The local upload could not be processed.", 400)
+
+    def _known_job(self, job_id: str) -> None:
+        with self.server.job_lock:
+            known = job_id in self.server.jobs
+        if not known:
+            raise BridgeFailure("This job is not part of the current local studio session.", 404)
+
+    def _get_job(self, job_id: str) -> dict[str, Any] | None:
+        self._known_job(job_id)
+        state = _json_response_from_upstream(self.server.phosphene_url, "/status")
+        return find_job(state, job_id)
+
+    def _handle_status(self, job_id: str) -> None:
+        job = self._get_job(job_id)
+        if job is None:
+            self._json({"status": "queued", "message": "Waiting for the local GPU queue."})
+            return
+        kind = job.get("status")
+        if kind not in ("queued", "running", "done", "failed", "cancelled", "stopped", "error"):
+            kind = "queued"
+        out: dict[str, Any] = {"status": kind}
+        progress = job.get("progress")
+        if isinstance(progress, dict):
+            value = progress.get("pct")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                out["progress"] = max(0, min(100, round(value)))
+            label = progress.get("phase_label")
+            if isinstance(label, str):
+                out["message"] = label[:200]
+        if kind == "done":
+            if safe_video_path(job):
+                out["videoUrl"] = "/local/video?jobId=" + job_id
+            else:
+                out = {"status": "error", "error": "Render finished but MP4 output was not found."}
+        elif kind in ("failed", "cancelled", "stopped", "error"):
+            error = job.get("error")
+            out["error"] = error[:400] if isinstance(error, str) else "Local render stopped."
+        self._json(out)
+
+    def _handle_video(self, job_id: str, download: bool) -> None:
+        job = self._get_job(job_id)
+        if job is None or job.get("status") != "done":
+            raise BridgeFailure("Video is not complete.", 409)
+        path = safe_video_path(job)
+        if path is None:
+            raise BridgeFailure("The generated MP4 cannot be found.", 404)
+        size = path.stat().st_size
+        self.send_response(200)
+        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Content-Length", str(size))
+        self.send_header("Cache-Control", "private, no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if download:
+            self.send_header("Content-Disposition", 'attachment; filename="axom-local.mp4"')
+        self.end_headers()
+        with path.open("rb") as source:
+            while chunk := source.read(256 * 1024):
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run AXOM_VID with no metered cloud GPU.")
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--phosphene", default=os.getenv("PHOSPHENE_URL", DEFAULT_PHOSPHENE_URL))
+    parser.add_argument("--open", action="store_true", help="Open the local studio in a browser.")
+    args = parser.parse_args()
+    root = Path(__file__).resolve().parent.parent / "web" / "dist"
+    server = LocalVideoServer(("127.0.0.1", args.port), LocalVideoHandler,
+                              static_root=root, phosphene_url=args.phosphene)
+    address = f"http://127.0.0.1:{args.port}"
+    print("AXOM_VID Local Studio: " + address, flush=True)
+    print("No cloud GPU quota, no paid API key. Phosphene must be running on localhost:8198.", flush=True)
+    if args.open:
+        import webbrowser
+        webbrowser.open(address + "/AXOM_VID/")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nLocal studio stopped.")
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

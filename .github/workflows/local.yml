@@ -1,0 +1,43 @@
+name: Local renderer verification
+
+on:
+  pull_request:
+    paths:
+      - "local/**"
+      - "web/**"
+      - ".github/workflows/local.yml"
+  push:
+    branches: [main]
+    paths:
+      - "local/**"
+      - ".github/workflows/local.yml"
+  workflow_dispatch:
+
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m unittest discover -s local/tests -v
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 9
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec astro check
+      - run: pnpm build
