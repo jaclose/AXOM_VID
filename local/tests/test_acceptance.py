@@ -133,6 +133,26 @@ class AcceptanceTests(unittest.TestCase):
         self.assertTrue(report["local_gpu_busy"])
         self.assertFalse(report["ready_to_render"])
 
+    def test_preflight_will_not_start_phosphene_during_comfyui_render(self):
+        def fetch(url):
+            if url.endswith(":8765/local/health"):
+                return {"online": True, "provider": "Phosphene LTX local"}
+            if url.endswith(":8198/status"):
+                return {"running": False, "current": None, "queue": [],
+                        "gpu": {"busy": False}, "deferred_downloads": {"active": False}}
+            if url.endswith(":8198/oneshot/options"):
+                return {"engines": {"ltx": {"available": True}}}
+            if url.endswith(":8188/system_stats"):
+                return {"system": {"os": "posix"}}
+            if url.endswith(":8188/queue"):
+                return {"queue_running": [[3, "current-job"]], "queue_pending": []}
+            return None
+        status = run_preflight(fetch)
+        self.assertTrue(status["comfyui_http_responsive"])
+        self.assertTrue(status["comfyui_gpu_busy"])
+        self.assertTrue(status["local_gpu_busy"])
+        self.assertFalse(status["ready_to_render"])
+
     def test_preflight_can_accept_idle_model_without_other_jobs(self):
         def fetch(url):
             if url.endswith(":8765/local/health"):
