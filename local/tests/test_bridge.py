@@ -146,6 +146,17 @@ class LocalBridgeTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(b"AXOM local test", body)
 
+    def test_local_studio_serves_github_pages_subpath(self):
+        status, body, _ = self._get("/AXOM_VID/")
+        self.assertEqual(status, 200)
+        self.assertIn(b"AXOM local test", body)
+        assets = self.site / "_astro"
+        assets.mkdir(exist_ok=True)
+        (assets / "sample.js").write_text('console.log("offline");')
+        status, content, _ = self._get("/AXOM_VID/_astro/sample.js")
+        self.assertEqual(status, 200)
+        self.assertIn(b"offline", content)
+
     def test_local_generation_uses_phosphene_not_cloud(self):
         body, ctype = self._form(orientation="portrait")
         with self._post("/local/generate", body, ctype) as res:
