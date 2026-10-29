@@ -53,6 +53,20 @@ const engineEl      = $<HTMLSelectElement>("[data-engine]");
 const engineHelp    = $<HTMLParagraphElement>("[data-engine-help]");
 const localOpen     = $<HTMLParagraphElement>("[data-local-open]");
 const localCheck    = $<HTMLButtonElement>("[data-local-check]");
+const localDuration = $<HTMLSelectElement>("[data-local-duration]");
+const localSettings = $<HTMLDivElement>("[data-local-settings]");
+const localBatch = $<HTMLSelectElement>("[data-local-batch]");
+const localQuality = $<HTMLSelectElement>("[data-local-quality]");
+const localVariations = $<HTMLTextAreaElement>("[data-local-variations]");
+const localHint = $<HTMLParagraphElement>("[data-local-hint]");
+const localQueueWrap = $<HTMLDivElement>("[data-local-queue]");
+const localJobList = $<HTMLUListElement>("[data-local-job-list]");
+const queueRefresh = $<HTMLButtonElement>("[data-queue-refresh]");
+const gifButton = $<HTMLButtonElement>("[data-gif-download]");
+const gifSettings = $<HTMLDivElement>("[data-gif-settings]");
+const gifSeconds = $<HTMLSelectElement>("[data-gif-seconds]");
+const gifWidth = $<HTMLSelectElement>("[data-gif-width]");
+const gifFps = $<HTMLSelectElement>("[data-gif-fps]");
 const durationHelp  = $<HTMLParagraphElement>("[data-duration-help]");
 const stepsHelp     = $<HTMLParagraphElement>("[data-steps-help]");
 const resultEmpty  = $<HTMLDivElement>("[data-result-empty]");
@@ -93,6 +107,20 @@ interface GpuQuota {
 let quotaRequestId = 0;
 let localEngineReady = false;
 let localCheckId = 0;
+
+type LocalJobStatus = "queued" | "running" | "done" | "failed" | "error";
+interface LocalJob {
+  id: string;
+  status: LocalJobStatus;
+  label: string;
+  duration: number;
+  message?: string;
+}
+const LOCAL_QUEUE_KEY = "AXOM_VID_LOCAL_JOBS_V2";
+const localJobs: LocalJob[] = [];
+let selectedLocalJobId: string | null = null;
+let localPollTimer: number | null = null;
+let localPollBusy = false;
 
 function resetLabel(timestamp: string | null): string {
   if (!timestamp || Number.isNaN(Date.parse(timestamp)) || Date.parse(timestamp) <= Date.now()) return "";
@@ -246,6 +274,17 @@ bindRange(durationEl, durationVal, "s");
 bindRange(stepsEl, stepsVal);
 
 promptEl.addEventListener("input", refreshGenerateButton);
+localDuration.addEventListener("change", () => {
+  durationVal.textContent = localDuration.value + "s";
+  const seconds = Number(localDuration.value);
+  localHint.textContent = seconds >= 30
+    ? "Long take: Phosphene will chain several 10-second renders. This may take many hours on an 18 GB Mac."
+    : "Local jobs run sequentially on your Mac. Try 3–5 seconds first on 18 GB of memory.";
+});
+localBatch.addEventListener("change", refreshGenerateButton);
+localVariations.addEventListener("input", refreshGenerateButton);
+queueRefresh.addEventListener("click", () => { void pollLocalJobs(); });
+gifButton.addEventListener("click", () => { if (selectedLocalJobId) void downloadLocalGif(selectedLocalJobId); });
 
 engineEl.addEventListener("change", applyEngineMode);
 localCheck.addEventListener("click", () => { void checkLocalEngine(); });
