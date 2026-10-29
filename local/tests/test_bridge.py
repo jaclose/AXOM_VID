@@ -79,7 +79,9 @@ class LocalBridgeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.tempdir = tempfile.TemporaryDirectory()
         cls.root = Path(cls.tempdir.name)
-        (cls.root / "index.html").write_text("<title>AXOM local test</title>")
+        cls.site = cls.root / "dist"
+        cls.site.mkdir()
+        (cls.site / "index.html").write_text("<title>AXOM local test</title>")
         clips = cls.root / "mlx_outputs"
         clips.mkdir()
         MockPhosphene.result_file = clips / "finished.mp4"
@@ -90,7 +92,7 @@ class LocalBridgeTests(unittest.TestCase):
         cls.upstream_thread.start()
         cls.bridge = LocalVideoServer(
             ("127.0.0.1", 0), LocalVideoHandler,
-            static_root=cls.root, phosphene_url=cls.upstream_url,
+            static_root=cls.site, phosphene_url=cls.upstream_url,
         )
         cls.bridge_url = "http://127.0.0.1:" + str(cls.bridge.server_port)
         cls.bridge_thread = threading.Thread(target=cls.bridge.serve_forever, daemon=True)
@@ -289,7 +291,7 @@ class LocalBridgeTests(unittest.TestCase):
         with state_file.open() as record:
             self.assertIn(job_id, json.load(record))
         fresh = LocalVideoServer(("127.0.0.1", 0), LocalVideoHandler,
-                                 static_root=self.root, phosphene_url=self.upstream_url)
+                                 static_root=self.site, phosphene_url=self.upstream_url)
         try:
             self.assertIn(job_id, fresh.jobs)
         finally:
