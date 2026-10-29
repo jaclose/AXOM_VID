@@ -21,6 +21,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - run: python -m pip install --no-cache-dir imageio-ffmpeg==0.7.0
+      - run: echo "AXOM_FFMPEG=$(python -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')" >> "$GITHUB_ENV"
       - run: python -m unittest discover -s local/tests -v
 
   frontend:
