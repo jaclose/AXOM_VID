@@ -569,7 +569,7 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
         partial = False
         requested = self.headers.get("Range")
         if requested:
-            match = re.fullmatch(r"bytes=(\\d*)-(\\d*)", requested)
+            match = re.fullmatch(r"bytes=(\d*)-(\d*)", requested)
             if not match or not (match.group(1) or match.group(2)):
                 raise BridgeFailure("Unsupported byte range.", 416)
             if match.group(1):
