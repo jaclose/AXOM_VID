@@ -4,7 +4,7 @@
 
 # AXOM_VID
 
-**Animate a still image with Wan 2.2 in your browser. Free. Open source.**
+**Animate a still image with Wan 2.2 in your browser. Shared free allowance or opt-in private GPU. Open source.**
 
 [This deployment](https://jaclose.github.io/AXOM_VID/) · [Original NiftyVid demo](https://igorcsis.github.io/nifty-vid/) · [Original source](https://github.com/IgorCSIS/nifty-vid)
 
@@ -34,6 +34,7 @@ AXOM_VID is a separate image-to-video project that uses the AXOM visual identity
 - Zero tracking and no signup for visitors
 - Clear error, retry, stop-waiting, and elapsed-time states; upstream failures without details no longer appear as `Failed: null`
 - Live shared GPU allowance, including the daily run count and local reset time; exhausted accounts are blocked before image upload
+- Optional private Wan 2.2 5B mode with a separately authorized, pay-per-video GPU provider. No automatic switch from free to billed generation
 
 ## Tech stack
 
@@ -42,7 +43,7 @@ AXOM_VID is a separate image-to-video project that uses the AXOM visual identity
 | Frontend | Astro 4 + Tailwind 3 + TypeScript |
 | Hosting | GitHub Pages (static) |
 | Edge proxy | Cloudflare Worker (free tier) |
-| Inference | Wan 2.2 image-to-video, on a public Hugging Face Space |
+| Inference | Wan 2.2 on shared Hugging Face ZeroGPU, or owner-only fal.ai Wan 2.2 5B |
 | Tooling | pnpm 9, Wrangler 4, GitHub Actions |
 
 ## Architecture
@@ -61,7 +62,7 @@ The Worker exists for two reasons. Browsers can't reliably call Hugging Face Spa
   <img src="assets/handoff.svg" alt="A sequence diagram. The browser posts one multipart form to the Worker. The Worker uploads the image to the Gradio Space, submits the job, gets an event id back, opens the server-sent event stream for it, and returns that response body as its own without reading it. The events then flow from the Space through Cloudflare to the browser, which parses the complete event and pulls the video URL out." width="880">
 </p>
 
-The Worker checks the account's ZeroGPU allowance, uploads the image, submits the job with its server-held token, then
+In shared mode, the Worker checks the account's ZeroGPU allowance, uploads the image, submits the job with its server-held token, then
 opens the upstream event stream and returns that stream to the browser. A
 restricted download route streams the finished MP4 as an attachment. The Worker
 does not buffer the generated clip or expose the token to the page. Its `/quota`
@@ -99,6 +100,29 @@ pnpm wrangler secret put HF_TOKEN
 
 Set `PUBLIC_WORKER_URL` to `https://axomvidjd.jafardabbagh.workers.dev` under **Settings → Secrets and variables → Actions → Variables** in the fork. A new Pages build wires the frontend to the Worker. Check the Worker `/health` endpoint for `configured: true`, then test a generation on the public page. The Worker token must be added as a Cloudflare secret, never as a GitHub variable or a committed file.
 
+## Optional private GPU mode (billable, owner only)
+
+The free shared mode remains the default. AXOM_VID also supports a **separate, explicit** private rendering selection using fal.ai's Wan 2.2 5B endpoint, which currently lists approximately **$0.15 per video**. The provider can change pricing and reject jobs according to its policies. Private jobs do not consume your Hugging Face ZeroGPU allowance, but they are not free or guaranteed unlimited: billing credits, rate limits, and GPU availability still apply.
+
+This feature is **off** unless *both* Cloudflare Worker secrets are configured:
+
+1. Create a fal.ai account, enable billing with a spending limit, and generate a fal API key.
+2. In Cloudflare > Workers & Pages > `axomvidjd` > Settings > Variables and secrets, add `FAL_KEY` as a **secret**. Never put this key in frontend code or a public variable.
+3. Generate a separate long random code locally (for example, `openssl rand -hex 32`). Add that as the Cloudflare Worker secret `PRIVATE_ACCESS_KEY`. Do not reuse your fal key as the access code.
+4. Deploy the changed Worker from `worker/` with `pnpm wrangler deploy` and deploy the matching website changes.
+5. On the website choose **Private GPU · pay per video**, enter the **private access code**, upload an image, and generate. The code stays in the current browser tab and is not persisted by the site.
+
+The private endpoints require the access code, and the provider key stays server-side. The website never automatically submits a billable job when the free quota runs out. Stopping the browser's wait **does not necessarily cancel or refund** a paid provider job. Access codes must be kept secret; CORS and per-location rate limiting are not replacements for authentication, hard budgets, or abuse controls. Do not expose this owner-only mode to arbitrary visitors. For public paid generation, introduce user accounts, server-side credit accounting, per-user budgets, and durable idempotent job records first.
+
+For test-only changes, no real fal inference request is required. Worker tests mock the provider and exercise private authorization, queue handling, and download URL validation:
+
+```sh
+cd worker
+pnpm install --frozen-lockfile
+pnpm typecheck
+node --experimental-strip-types --test tests/*.test.mjs
+```
+
 ## Limitations
 
 - Generation starts at 1.5 seconds and 3 inference steps to favor a first result. Advanced options allow up to 4.5 seconds and 12 steps; longer clips use more GPU time and may fail on the shared Space.
@@ -112,7 +136,8 @@ Set `PUBLIC_WORKER_URL` to `https://axomvidjd.jafardabbagh.workers.dev` under **
 - [ ] Optional second keyframe ("last frame") for guided motion
 - [ ] Saved generations across sessions (opt-in localStorage)
 - [ ] Frame extraction tool to use a generated frame as the next input
-- [ ] Swap-able backend: fal.ai for users with API keys
+- [x] Optional private backend: fal.ai with owner-held secrets and per-video billing
+- [ ] Per-user accounts, credit budgets, and globally enforced spending controls before making paid generation public
 
 ## Credits
 
