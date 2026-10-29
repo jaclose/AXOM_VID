@@ -161,11 +161,15 @@ def safe_video_path(job: dict[str, Any]) -> Path | None:
     if not path.is_absolute() or "mlx_outputs" not in path.parts or path.suffix.lower() != ".mp4":
         return None
     try:
+        # Pinokio may symlink mlx_outputs to an external SSD. Resolve the
+        # expected output directory and require the file to remain inside it.
+        idx = path.parts.index("mlx_outputs")
+        outputs_root = Path(*path.parts[:idx + 1]).resolve(strict=True)
         resolved = path.resolve(strict=True)
-        if not resolved.is_file() or "mlx_outputs" not in resolved.parts:
+        if not resolved.is_file() or not resolved.is_relative_to(outputs_root):
             return None
         return resolved
-    except OSError:
+    except (OSError, ValueError):
         return None
 
 
