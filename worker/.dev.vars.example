@@ -1,5 +1,6 @@
-# Example local secrets. Copy to `.dev.vars` (which is gitignored) when needed.
-# Today the Worker doesn't require secrets because the HF Space is public.
-# When we swap to a paid backend (fal.ai, Replicate) we'll add the API key here.
-#
-# FAL_KEY=your-fal-key-here
+# For local Worker development, copy to .dev.vars (gitignored).
+# Never commit real tokens or enter FAL_KEY into any PUBLIC_ frontend setting.
+HF_TOKEN=your-huggingface-read-token
+# Optional, separately authorized paid mode. Both values are required.
+FAL_KEY=your-fal-api-key
+PRIVATE_ACCESS_KEY=generate-a-long-random-secret
