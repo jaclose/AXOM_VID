@@ -171,6 +171,27 @@ class LocalBridgeTests(unittest.TestCase):
         self.assertIn(b"ftypmp42", data)
         self.assertTrue(headers["Content-Type"].startswith("video/mp4"))
 
+    def test_video_stream_supports_byte_range_requests(self):
+        body, ctype = self._form()
+        with self._post("/local/generate", body, ctype) as result:
+            job_id = json.load(result)["jobId"]
+        request = Request(self.bridge_url + "/local/video?jobId=" + job_id,
+                          headers={"Range": "bytes=4-11"})
+        with urlopen(request) as response:
+            self.assertEqual(response.status, 206)
+            self.assertEqual(response.read(), MockPhosphene.result_file.read_bytes()[4:12])
+            self.assertIn("bytes 4-11/", response.headers.get("Content-Range", ""))
+
+    def test_out_of_bounds_video_range_returns_416(self):
+        body, ctype = self._form()
+        with self._post("/local/generate", body, ctype) as result:
+            job_id = json.load(result)["jobId"]
+        request = Request(self.bridge_url + "/local/video?jobId=" + job_id,
+                          headers={"Range": "bytes=99999-100000"})
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(request)
+        self.assertEqual(raised.exception.code, 416)
+
     def test_unknown_job_cannot_read_arbitrary_local_files(self):
         with self.assertRaises(HTTPError) as raised:
             self._get("/local/video?jobId=../README.md")
