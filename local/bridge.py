@@ -565,21 +565,48 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
         if path is None:
             raise BridgeFailure("The generated MP4 cannot be found.", 404)
         size = path.stat().st_size
-        self.send_response(200)
+        first, last = 0, size - 1
+        partial = False
+        requested = self.headers.get("Range")
+        if requested:
+            match = re.fullmatch(r"bytes=(\\d*)-(\\d*)", requested)
+            if not match or not (match.group(1) or match.group(2)):
+                raise BridgeFailure("Unsupported byte range.", 416)
+            if match.group(1):
+                first = int(match.group(1))
+                last = int(match.group(2)) if match.group(2) else size - 1
+            else:
+                suffix = int(match.group(2))
+                if suffix <= 0:
+                    raise BridgeFailure("Invalid byte range.", 416)
+                first = max(0, size - suffix)
+            if first >= size or first > last:
+                raise BridgeFailure("Byte range is outside the video.", 416)
+            last = min(last, size - 1)
+            partial = True
+        self.send_response(206 if partial else 200)
         self.send_header("Content-Type", "video/mp4")
-        self.send_header("Content-Length", str(size))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(last - first + 1))
+        if partial:
+            self.send_header("Content-Range", f"bytes {first}-{last}/{size}")
         self.send_header("Cache-Control", "private, no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         if download:
             self.send_header("Content-Disposition", 'attachment; filename="axom-local.mp4"')
         self.end_headers()
         with path.open("rb") as source:
-            while chunk := source.read(256 * 1024):
+            source.seek(first)
+            remaining = last - first + 1
+            while remaining > 0:
+                chunk = source.read(min(256 * 1024, remaining))
+                if not chunk:
+                    break
                 try:
                     self.wfile.write(chunk)
                 except (BrokenPipeError, ConnectionResetError):
                     break
-
+                remaining -= len(chunk)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run AXOM_VID with no metered cloud GPU.")
