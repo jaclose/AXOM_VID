@@ -48,6 +48,12 @@ const buttonLabel  = $<HTMLSpanElement>("[data-button-label]");
 const spinnerEl    = $<HTMLSpanElement>("[data-spinner]");
 const statusEl     = $<HTMLParagraphElement>("[data-status]");
 const quotaEl      = $<HTMLParagraphElement>("[data-quota]");
+const serviceSelect = $<HTMLSelectElement>("[data-render-service]");
+const serviceHelp   = $<HTMLParagraphElement>("[data-service-help]");
+const privateKeyWrap = $<HTMLDivElement>("[data-private-key-wrap]");
+const privateKeyEl   = $<HTMLInputElement>("[data-private-access-key]");
+const durationHelp   = $<HTMLParagraphElement>("[data-duration-help]");
+const stepsHelp      = $<HTMLParagraphElement>("[data-steps-help]");
 const resultEmpty  = $<HTMLDivElement>("[data-result-empty]");
 const resultLoad   = $<HTMLDivElement>("[data-result-loading]");
 const resultError  = $<HTMLDivElement>("[data-result-error]");
@@ -84,6 +90,8 @@ interface GpuQuota {
 }
 
 let quotaRequestId = 0;
+let privateAvailable = false;
+let privateVideoRequestId: string | null = null;
 
 function resetLabel(timestamp: string | null): string {
   if (!timestamp || Number.isNaN(Date.parse(timestamp)) || Date.parse(timestamp) <= Date.now()) return "";
@@ -103,6 +111,7 @@ function quotaBlock(quota: GpuQuota): string | null {
 }
 
 async function refreshQuota(): Promise<GpuQuota | null> {
+  if (serviceSelect.value === "private") return null;
   const requestId = ++quotaRequestId;
   try {
     const response = await fetch(`${WORKER_URL}/quota`, { signal: AbortSignal.timeout(6000) });
@@ -120,7 +129,7 @@ async function refreshQuota(): Promise<GpuQuota | null> {
       runsLimit: typeof data.runsLimit === "number" && Number.isFinite(data.runsLimit) ? Math.max(0, Math.floor(data.runsLimit)) : null,
       runsResetsAt: typeof data.runsResetsAt === "string" ? data.runsResetsAt : null,
     };
-    if (requestId === quotaRequestId) {
+    if (requestId === quotaRequestId && serviceSelect.value === "shared") {
       const blocked = quotaBlock(quota);
       quotaEl.dataset.state = blocked ? "empty" : "ready";
       quotaEl.textContent = blocked
@@ -237,10 +246,60 @@ bindRange(stepsEl, stepsVal);
 
 promptEl.addEventListener("input", refreshGenerateButton);
 
+privateKeyEl.addEventListener("input", refreshGenerateButton);
+
+async function checkPrivateProvider(): Promise<void> {
+  serviceHelp.textContent = "Checking private provider configuration…";
+  privateAvailable = false;
+  refreshGenerateButton();
+  try {
+    const response = await fetch(WORKER_URL + "/health", { signal: AbortSignal.timeout(6000) });
+    if (!response.ok) throw new Error("Service health unavailable");
+    const data = await response.json() as { privateConfigured?: unknown };
+    privateAvailable = data.privateConfigured === true;
+    serviceHelp.textContent = privateAvailable
+      ? "Private GPU configured. Requires your access code; each submitted video is billable."
+      : "Private GPU is not enabled. The owner must configure FAL_KEY and PRIVATE_ACCESS_KEY in Cloudflare first.";
+  } catch {
+    serviceHelp.textContent = "Could not check the private GPU configuration. Try selecting the mode again.";
+  }
+  refreshGenerateButton();
+}
+
+serviceSelect.addEventListener("change", () => {
+  const isPrivate = serviceSelect.value === "private";
+  privateKeyWrap.classList.toggle("hidden", !isPrivate);
+  durationEl.min = isPrivate ? "1" : "0.5";
+  durationEl.max = isPrivate ? "5" : "4.5";
+  durationEl.value = isPrivate ? "3" : "1.5";
+  stepsEl.min = isPrivate ? "20" : "1";
+  stepsEl.max = isPrivate ? "40" : "12";
+  stepsEl.value = isPrivate ? "30" : "3";
+  durationHelp.textContent = isPrivate
+    ? "Private Wan 2.2 5B supports 1–5 seconds. The provider charges per generated clip."
+    : "Shorter clips usually finish sooner on a shared GPU.";
+  stepsHelp.textContent = isPrivate
+    ? "20–40 steps. More steps can improve detail but increase render time."
+    : "More steps may improve detail, but take longer.";
+  durationEl.dispatchEvent(new Event("input"));
+  stepsEl.dispatchEvent(new Event("input"));
+  if (isPrivate) {
+    quotaEl.dataset.state = "unknown";
+    quotaEl.textContent = "Private GPU: no shared ZeroGPU daily-run cap. Pay per submitted render.";
+    void checkPrivateProvider();
+  } else {
+    serviceHelp.textContent = "Shared Hugging Face GPU. Daily run limits apply to everyone using this site.";
+    void refreshQuota();
+  }
+  refreshGenerateButton();
+});
+
+
 // ---------- UI state helpers ----------
 
 function refreshGenerateButton() {
-  const ready = !!state.file && promptEl.value.trim().length > 0 && !state.busy;
+  const ready = !!state.file && promptEl.value.trim().length > 0 && !state.busy &&
+    (serviceSelect.value !== "private" || (privateAvailable && privateKeyEl.value.trim().length > 0));
   generateBtn.disabled = !ready;
 }
 
@@ -253,6 +312,8 @@ function setStatus(text: string, tone: StatusTone = "info") {
 function setBusy(busy: boolean) {
   state.busy = busy;
   spinnerEl.classList.toggle("hidden", !busy);
+  serviceSelect.disabled = busy;
+  privateKeyEl.disabled = busy;
   buttonLabel.textContent = busy ? "Generating..." : "Generate video";
   refreshGenerateButton();
 }
@@ -275,6 +336,7 @@ cancelBtn.addEventListener("click", () => {
 });
 
 async function runGeneration(): Promise<void> {
+  if (serviceSelect.value === "private") return runPrivateGeneration();
   if (!state.file || state.busy || !promptEl.value.trim()) return;
 
   let blockedAtPreflight: GpuQuota | null = null;
@@ -325,6 +387,7 @@ async function runGeneration(): Promise<void> {
       if (event === "estimation" || event === "pending") loadingMsg.textContent = "Waiting in the GPU queue…";
     });
 
+    privateVideoRequestId = null;
     resultVideo.src = videoUrl;
     downloadLink.href = downloadUrl(videoUrl);
     downloadLink.setAttribute("download", `axom-vid-${Date.now()}.mp4`);
@@ -356,6 +419,154 @@ async function runGeneration(): Promise<void> {
     setBusy(false);
   }
 }
+
+
+/**
+ * Explicitly opted-in, owner-authorized provider. There is no automatic
+ * fallback from shared quota to a paid job. The access code lives only in the
+ * current tab; it is not stored in localStorage, a cookie, or an image.
+ */
+async function paidFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set("X-AXOM-Access-Key", privateKeyEl.value.trim());
+  return fetch(WORKER_URL + path, { ...init, headers });
+}
+
+async function pollDelay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) { reject(new DOMException("Stopped waiting", "AbortError")); return; }
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", cancel);
+      resolve();
+    }, ms);
+    const cancel = () => {
+      window.clearTimeout(timer);
+      reject(new DOMException("Stopped waiting", "AbortError"));
+    };
+    signal.addEventListener("abort", cancel, { once: true });
+  });
+}
+
+async function runPrivateGeneration(): Promise<void> {
+  if (!state.file || state.busy || !promptEl.value.trim() || !privateAvailable || !privateKeyEl.value.trim()) return;
+
+  const controller = new AbortController();
+  state.controller = controller;
+  state.cancelReason = null;
+  const timeout = window.setTimeout(() => {
+    state.cancelReason = "timeout";
+    controller.abort();
+  }, 12 * 60 * 1000);
+  const stopElapsed = startElapsedTimer();
+  setBusy(true);
+  showResultState("loading");
+  loadingMsg.textContent = "Submitting to private video GPU…";
+  cancelBtn.textContent = "Stop watching (render may still be charged)";
+  setStatus("Private rendering is billed per submitted job. It will not consume shared Hugging Face runs.");
+  resultVideo.pause();
+
+  try {
+    const form = new FormData();
+    form.append("image", state.file);
+    form.append("params", JSON.stringify({
+      prompt: promptEl.value.trim(),
+      duration_seconds: Number(durationEl.value),
+      steps: Number(stepsEl.value),
+    }));
+    const submitted = await paidFetch("/fal/generate", {
+      method: "POST", body: form, signal: controller.signal,
+    });
+    if (!submitted.ok) throw new Error(await readErrorMessage(submitted));
+    const submission = await submitted.json() as { requestId?: unknown };
+    if (typeof submission.requestId !== "string") throw new Error("Private provider returned no request ID.");
+    const requestId = submission.requestId;
+    loadingMsg.textContent = "Waiting in private GPU queue…";
+
+    while (true) {
+      await pollDelay(3500, controller.signal);
+      const statusResponse = await paidFetch("/fal/status?requestId=" + encodeURIComponent(requestId), {
+        signal: controller.signal,
+      });
+      if (!statusResponse.ok) throw new Error(await readErrorMessage(statusResponse));
+      const status = await statusResponse.json() as {
+        status?: string; queue_position?: number; error?: string; error_type?: string;
+      };
+      if (status.status === "IN_QUEUE") {
+        loadingMsg.textContent = typeof status.queue_position === "number"
+          ? "Private GPU queue: " + status.queue_position + " jobs ahead"
+          : "Waiting in private GPU queue…";
+      } else if (status.status === "IN_PROGRESS") {
+        loadingMsg.textContent = "Private GPU is rendering your frames…";
+      } else if (status.status === "COMPLETED") {
+        if (status.error || status.error_type) {
+          throw new Error(status.error || ("Provider reported " + status.error_type));
+        }
+        break;
+      } else {
+        throw new Error("Unexpected private provider status.");
+      }
+    }
+
+    const resultResponse = await paidFetch("/fal/result?requestId=" + encodeURIComponent(requestId), {
+      signal: controller.signal,
+    });
+    if (!resultResponse.ok) throw new Error(await readErrorMessage(resultResponse));
+    const result = await resultResponse.json() as { videoUrl?: unknown };
+    if (typeof result.videoUrl !== "string") throw new Error("Provider finished but returned no playable MP4.");
+    privateVideoRequestId = requestId;
+    resultVideo.src = result.videoUrl;
+    downloadLink.href = WORKER_URL + "/fal/download?requestId=" + encodeURIComponent(requestId);
+    downloadLink.setAttribute("download", "axom-vid-private.mp4");
+    showResultState("ready");
+    addToHistory(result.videoUrl, requestId);
+    setStatus("Private video ready. Use Download MP4 to save it.", "success");
+  } catch (err) {
+    if (controller.signal.aborted && state.cancelReason === "user") {
+      showResultState("empty");
+      setStatus("Stopped watching. The submitted job may still run and incur charges.");
+    } else {
+      errorTitle.textContent = "Private generation stopped";
+      errorDetail.textContent = state.cancelReason === "timeout"
+        ? "No result arrived after twelve minutes. The provider job may continue and incur charges."
+        : describeFailure(err, null);
+      retryBtn.textContent = "Try again (new paid job)";
+      showResultState("error");
+      setStatus("Private generation did not finish in this tab. A retry may incur another charge.", "error");
+    }
+  } finally {
+    window.clearTimeout(timeout);
+    stopElapsed();
+    state.controller = null;
+    state.cancelReason = null;
+    cancelBtn.textContent = "Stop waiting";
+    setBusy(false);
+  }
+}
+
+// A normal cross-origin <a download> may open rather than download a video.
+// Fetch through our authenticated Worker and create a temporary local blob.
+downloadLink.addEventListener("click", async (event) => {
+  if (!privateVideoRequestId) return;
+  event.preventDefault();
+  try {
+    setStatus("Downloading private video…");
+    const res = await paidFetch("/fal/download?requestId=" + encodeURIComponent(privateVideoRequestId));
+    if (!res.ok) throw new Error(await readErrorMessage(res));
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = "axom-vid-private-" + Date.now() + ".mp4";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 10_000);
+    setStatus("MP4 downloaded.", "success");
+  } catch (err) {
+    setStatus("Download failed: " + describeFailure(err, null), "error");
+  }
+});
+
 
 function startElapsedTimer(): () => void {
   const started = performance.now();
@@ -530,7 +741,7 @@ async function readErrorMessage(res: Response): Promise<string> {
 
 // ---------- History ----------
 
-function addToHistory(url: string) {
+function addToHistory(url: string, privateRequestId: string | null = null) {
   historyWrap.classList.remove("hidden");
   const li = document.createElement("li");
   li.className = "shrink-0";
@@ -552,8 +763,9 @@ function addToHistory(url: string) {
   });
   // Click to bring it back into the main result slot.
   button.addEventListener("click", () => {
+    privateVideoRequestId = privateRequestId;
     resultVideo.src = url;
-    downloadLink.href = downloadUrl(url);
+    downloadLink.href = privateRequestId ? `${WORKER_URL}/fal/download?requestId=${encodeURIComponent(privateRequestId)}` : downloadUrl(url);
     showResultState("ready");
   });
   button.appendChild(v);
