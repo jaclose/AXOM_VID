@@ -14,6 +14,9 @@ import json
 import os
 import re
 import secrets
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 from email import policy
@@ -28,6 +31,9 @@ from urllib.request import Request, urlopen
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_BYTES = MAX_IMAGE_BYTES + 32 * 1024
 MAX_PROMPT = 1200
+ALLOWED_DURATIONS = (3, 5, 7, 10, 30, 45, 60, 90, 120)
+LONG_TAKES = (30, 45, 60, 90, 120)
+MAX_BATCH = 6
 DEFAULT_PHOSPHENE_URL = "http://127.0.0.1:8198"
 ALLOWED_IMAGE_TYPES = {
     "image/png": (b"\x89PNG\r\n\x1a\n", "png"),
@@ -120,10 +126,22 @@ def parse_form(data: bytes, content_type: str) -> tuple[bytes, str, dict[str, An
     if not isinstance(prompt, str) or not (1 <= len(prompt.strip()) <= MAX_PROMPT):
         raise BridgeFailure("Enter a motion prompt of 1 to 1,200 characters.", 400)
     seconds = settings.get("duration_seconds")
-    if seconds not in (3, 5) or isinstance(seconds, bool):
-        raise BridgeFailure("Local clips support 3 or 5 seconds.", 400)
+    if seconds not in ALLOWED_DURATIONS or isinstance(seconds, bool):
+        raise BridgeFailure("Duration must be 3, 5, 7, 10, 30, 45, 60, 90 or 120 seconds.", 400)
     if settings.get("orientation") not in ("landscape", "portrait"):
         raise BridgeFailure("Choose portrait or landscape orientation.", 400)
+    count = settings.get("batch_count", 1)
+    if isinstance(count, bool) or not isinstance(count, int) or not (1 <= count <= MAX_BATCH):
+        raise BridgeFailure("Batch size must be an integer from 1 to 6.", 400)
+    prompts = settings.get("prompts")
+    if prompts is not None:
+        if not isinstance(prompts, list) or len(prompts) != count:
+            raise BridgeFailure("Provide exactly one motion prompt for each batch render.", 400)
+        if any(not isinstance(p, str) or not (1 <= len(p.strip()) <= MAX_PROMPT) for p in prompts):
+            raise BridgeFailure("Each batch prompt must contain 1–1,200 characters.", 400)
+    quality = settings.get("quality", "quick")
+    if quality not in ("quick", "balanced"):
+        raise BridgeFailure("Local quality must be quick or balanced.", 400)
     return image, mime, settings
 
 
@@ -187,9 +205,45 @@ class LocalVideoServer(ThreadingHTTPServer):
             raise ValueError("Phosphene URL must be an HTTP loopback server.")
         self.phosphene_url = phosphene_url.rstrip("/")
         self.static_root = Path(static_root).resolve()
+        self.state_file = self.static_root.parent / ".axom-local-state" / "jobs.json"
         self.jobs: dict[str, float] = {}
         self.job_lock = threading.Lock()
+        try:
+            payload = json.loads(self.state_file.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                for job_id, timestamp in payload.items():
+                    if (isinstance(job_id, str) and re.fullmatch(r"j-[a-zA-Z0-9-]{1,100}", job_id)
+                            and isinstance(timestamp, (int, float)) and not isinstance(timestamp, bool)
+                            and 0 < timestamp < time.time() + 3600):
+                        self.jobs[job_id] = float(timestamp)
+        except (OSError, ValueError):
+            pass  # First launch / corrupt file: stay local and begin a new session.
         super().__init__(server_address, handler)
+
+    def remember_job(self, job_id: str) -> None:
+        with self.job_lock:
+            self.jobs[job_id] = time.time()
+            # Keep a bounded list (30 days) on the owner's disk, not an online account.
+            cutoff = time.time() - 30 * 86400
+            self.jobs = {key: ts for key, ts in self.jobs.items() if ts > cutoff}
+            if len(self.jobs) > 500:
+                self.jobs = dict(sorted(self.jobs.items(), key=lambda row: row[1])[-500:])
+            tmp_path: Path | None = None
+            try:
+                self.state_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", dir=self.state_file.parent,
+                    prefix=".jobs-", suffix=".tmp", delete=False,
+                ) as output:
+                    tmp_path = Path(output.name)
+                    os.chmod(tmp_path, 0o600)
+                    json.dump(self.jobs, output)
+                tmp_path.replace(self.state_file)
+            except OSError:
+                # The GPU job has already been queued: never misreport failure
+                # just because the drive is temporarily read-only.
+                if tmp_path is not None:
+                    tmp_path.unlink(missing_ok=True)
 
 
 class LocalVideoHandler(SimpleHTTPRequestHandler):
