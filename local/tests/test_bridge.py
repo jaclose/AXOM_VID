@@ -151,6 +151,9 @@ class LocalBridgeTests(unittest.TestCase):
         self.assertEqual(fields["frames"], ["73"])
 
     def test_completed_video_download_is_restricted_to_owned_job(self):
+        body, ctype = self._form()
+        with self._post("/local/generate", body, ctype) as submitted:
+            self.assertEqual(submitted.status, 200)
         status, body, _ = self._get("/local/status?jobId=j-local-test-123")
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["status"], "done")
