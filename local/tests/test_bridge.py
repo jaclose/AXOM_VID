@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shutil
+import socket
 import subprocess
 from unittest.mock import patch
 import tempfile
@@ -18,7 +19,7 @@ from urllib.error import HTTPError
 from urllib.parse import parse_qs
 from urllib.request import Request, urlopen
 
-from local.bridge import LocalVideoServer, LocalVideoHandler
+from local.bridge import LocalVideoServer, LocalVideoHandler, create_server_with_fallback
 
 PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
@@ -140,6 +141,46 @@ class LocalBridgeTests(unittest.TestCase):
         status, body, _ = self._get("/local/health")
         self.assertEqual(status, 200)
         self.assertTrue(json.loads(body)["online"])
+
+    def test_occupied_studio_port_falls_back_without_stopping_other_listener(self):
+        occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        occupied.bind(("127.0.0.1", 0))
+        occupied.listen(1)
+        blocked_port = occupied.getsockname()[1]
+        try:
+            bridge = create_server_with_fallback(
+                start_port=blocked_port, attempts=6, static_root=self.site,
+                phosphene_url=self.upstream_url,
+            )
+            try:
+                self.assertNotEqual(bridge.server_port, blocked_port)
+                self.assertGreater(bridge.server_port, blocked_port)
+                self.assertLess(bridge.server_port, blocked_port + 6)
+                self.assertEqual(occupied.getsockname()[1], blocked_port)
+                background = threading.Thread(target=bridge.serve_forever, daemon=True)
+                background.start()
+                with urlopen("http://127.0.0.1:" + str(bridge.server_port)
+                             + "/AXOM_VID/") as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertIn(b"AXOM local test", response.read())
+            finally:
+                bridge.shutdown()
+                bridge.server_close()
+        finally:
+            occupied.close()
+
+    def test_port_fallback_does_not_hide_unavailable_configured_port(self):
+        occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        occupied.bind(("127.0.0.1", 0))
+        occupied.listen(1)
+        try:
+            with self.assertRaises(OSError):
+                create_server_with_fallback(
+                    start_port=occupied.getsockname()[1], attempts=1,
+                    static_root=self.site, phosphene_url=self.upstream_url,
+                )
+        finally:
+            occupied.close()
 
     def test_site_is_served_on_same_origin(self):
         status, body, _ = self._get("/")
