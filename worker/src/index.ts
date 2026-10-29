@@ -296,14 +296,12 @@ async function submitJob(
     inputImage,
     null, // last_image, optional second keyframe, we don't expose this in the UI
     params.prompt?.trim() || "make this image come alive, cinematic motion, smooth animation",
-    clampInt(params.steps ?? 6, 1, 12),
+    clampInt(params.steps ?? 3, 1, 12),
     DEFAULT_NEGATIVE_PROMPT,
     // Upper bound matches the slider in web/src/components/Studio.astro. The
-    // free Space hits its wall-clock limit around five seconds and returns
-    // nothing at all, so anything above this is a request for a timeout. The
-    // Worker is the public endpoint, not the slider, so the cap belongs here
-    // too rather than only in the page.
-    clampFloat(params.duration_seconds ?? 3.5, 0.5, 4.5),
+    // Space reserves more ZeroGPU time for longer clips before they start.
+    // The Worker is the public endpoint, so it enforces the UI's cap too.
+    clampFloat(params.duration_seconds ?? 1.5, 0.5, 4.5),
     1,    // guidance_scale (kept at 1, higher values double GPU usage for marginal gains here)
     1,    // guidance_scale_2
     42,   // seed (ignored when randomize_seed=true)

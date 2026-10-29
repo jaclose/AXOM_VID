@@ -74,14 +74,14 @@ const assetBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
           <div>
             <label for="duration" class="range-label flex items-center justify-between">
               <span>Duration</span>
-              <span data-duration-value class="range-value font-mono">3.5s</span>
+              <span data-duration-value class="range-value font-mono">1.5s</span>
             </label>
             <input
               id="duration"
               name="duration"
               aria-describedby="duration-help"
               type="range"
-              min="0.5" max="4.5" step="0.1" value="3.5"
+              min="0.5" max="4.5" step="0.1" value="1.5"
               data-duration
               class="range-control w-full"
             />
@@ -90,14 +90,14 @@ const assetBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
           <div>
             <label for="steps" class="range-label flex items-center justify-between">
               <span>Inference steps</span>
-              <span data-steps-value class="range-value font-mono">6</span>
+              <span data-steps-value class="range-value font-mono">3</span>
             </label>
             <input
               id="steps"
               name="steps"
               aria-describedby="steps-help"
               type="range"
-              min="1" max="12" step="1" value="6"
+              min="1" max="12" step="1" value="3"
               data-steps
               class="range-control w-full"
             />

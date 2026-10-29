@@ -99,7 +99,7 @@ Set `PUBLIC_WORKER_URL` to `https://axomvidjd.jafardabbagh.workers.dev` under **
 
 ## Limitations
 
-- Duration caps at 4.5 seconds in the slider and Worker. Longer clips and more inference steps take more GPU time; this cap cannot guarantee a run will finish.
+- Generation starts at 1.5 seconds and 3 inference steps to favor a first result. Advanced options allow up to 4.5 seconds and 12 steps; longer clips use more GPU time and may fail on the shared Space.
 - The upstream Space uses shared ZeroGPU hardware. Queues, cold starts, service failures, and daily account quota can interrupt generation. [Hugging Face lists 5 minutes of daily GPU quota for free accounts](https://huggingface.co/docs/hub/spaces-zerogpu); this Space requests an xlarge GPU, which uses quota at 2×. Every public visitor shares the token owner's quota.
 - The upstream Space can change or disappear. A backend change may require updating `HF_SPACE_BASE` and the input mapping in `worker/src/index.ts`.
 - Cloudflare [documents no hard wall-time limit for HTTP Workers while the client remains connected](https://developers.cloudflare.com/workers/platform/limits/). A broken browser connection or upstream stream can still stop a run.

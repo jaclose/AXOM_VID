@@ -298,7 +298,7 @@ function describeFailure(err: unknown): string {
   }
   return message && message !== "null" && message !== "undefined"
     ? message
-    : "The video service stopped without an explanation. Its GPU quota or queue may be unavailable; try again later.";
+    : "The Space stopped without details. It may not have enough GPU allowance for these settings. Try a shorter clip with fewer steps, or retry later.";
 }
 
 /**
@@ -400,7 +400,7 @@ function parseUpstreamError(data: string): string {
     const message = payload.message ?? payload.error;
     if (typeof message === "string" && message.trim()) return message.trim();
   }
-  return "The public GPU stopped the job without details. Its quota or queue may be unavailable; try again later.";
+  return "The Space stopped without details. It may not have enough GPU allowance for these settings. Try a shorter clip with fewer steps, or retry later.";
 }
 
 // Hardcoded because the browser doesn't know the Space URL and we'd rather
