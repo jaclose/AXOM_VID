@@ -657,9 +657,9 @@ def main() -> None:
         if error.errno == errno.EADDRINUSE:
             parser.exit(
                 2,
-                "AXOM_VID cannot start: all local ports 8765–8775 are occupied.\\n"
-                "Inspect existing listeners with: lsof -nP -iTCP -sTCP:LISTEN\\n"
-                "Do not terminate an unknown process.\\n",
+                "AXOM_VID cannot start: all local ports 8765–8775 are occupied.\n"
+                "Inspect existing listeners with: lsof -nP -iTCP -sTCP:LISTEN\n"
+                "Do not terminate an unknown process.\n",
             )
         raise
     address = f"http://127.0.0.1:{server.server_port}"
