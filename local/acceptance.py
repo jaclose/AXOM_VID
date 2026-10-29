@@ -402,14 +402,20 @@ def run_preflight(
         {"state": "offline", "ready_to_test": False}
     )
     comfy = fetch("http://127.0.0.1:8188/system_stats")
+    comfy_queue = fetch("http://127.0.0.1:8188/queue")
+    comfy_busy = bool(
+        isinstance(comfy_queue, dict)
+        and (comfy_queue.get("queue_running") or comfy_queue.get("queue_pending"))
+    )
     gpu = phosphene["status"].get("gpu") if phosphene else None
-    gpu_busy = bool(
+    phosphene_busy = bool(
         phosphene and (
             phosphene["status"].get("current") is not None
             or bool(phosphene["status"].get("queue"))
             or (isinstance(gpu, dict) and gpu.get("busy") is True)
         )
     )
+    gpu_busy = phosphene_busy or comfy_busy
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "ssd_checkout": str(ROOT),
@@ -418,6 +424,7 @@ def run_preflight(
         "model": model,
         "comfyui_http_responsive": isinstance(comfy, dict) and "system" in comfy,
         "local_gpu_busy": gpu_busy,
+        "comfyui_gpu_busy": comfy_busy,
         "axom_bridge_online": bool(axom and axom["health"].get("online") is True),
         "ready_to_render": bool(
             axom and axom["health"].get("online") is True
@@ -455,7 +462,7 @@ def main() -> int:
     if status["model"]["state"] in ("downloading", "blocked"):
         print("Phosphene model download is still active/blocked. Do not overwrite or remove .part files.", flush=True)
     if status["local_gpu_busy"]:
-        print("Another GPU job is running or queued. This check will not start an acceptance render.", flush=True)
+        print("Phosphene or ComfyUI has another GPU job running/queued. No acceptance render will be started.", flush=True)
 
     if args.render:
         if not status["ready_to_render"]:
