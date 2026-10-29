@@ -148,6 +148,8 @@ body {
 [data-status][data-tone="error"] { color: var(--ax-danger); }
 [data-status][data-tone="success"] { color: var(--ax-success); }
 [data-status][data-tone="info"] { color: var(--ax-muted); }
+.quota-line { margin: 12px 0 0; padding-left: 11px; border-left: 1px solid var(--ax-line); color: var(--ax-muted); font-size: 12px; line-height: 1.5; }
+.quota-line[data-state="empty"] { border-color: var(--ax-danger); color: var(--ax-danger); }
 
 .result-stage { position: relative; min-height: 240px; border: 1px solid var(--ax-line); border-radius: 16px; background: radial-gradient(circle at 50% 42%, var(--ax-gold-wash), transparent 62%), var(--ax-panel); box-shadow: var(--ax-shadow); }
 .result-stage::before { content: ""; position: absolute; z-index: 1; left: 16px; top: -1px; width: 54px; height: 1px; background: var(--ax-gold); }

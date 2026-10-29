@@ -47,6 +47,7 @@ const generateBtn  = $<HTMLButtonElement>("[data-generate]");
 const buttonLabel  = $<HTMLSpanElement>("[data-button-label]");
 const spinnerEl    = $<HTMLSpanElement>("[data-spinner]");
 const statusEl     = $<HTMLParagraphElement>("[data-status]");
+const quotaEl      = $<HTMLParagraphElement>("[data-quota]");
 const resultEmpty  = $<HTMLDivElement>("[data-result-empty]");
 const resultLoad   = $<HTMLDivElement>("[data-result-loading]");
 const resultError  = $<HTMLDivElement>("[data-result-error]");
@@ -73,6 +74,68 @@ const state = {
   controller: null as AbortController | null,
   cancelReason: null as "user" | "timeout" | null,
 };
+
+interface GpuQuota {
+  remainingSeconds: number;
+  resetsAt: string | null;
+  runsRemaining: number | null;
+  runsLimit: number | null;
+  runsResetsAt: string | null;
+}
+
+let quotaRequestId = 0;
+
+function resetLabel(timestamp: string | null): string {
+  if (!timestamp || Number.isNaN(Date.parse(timestamp)) || Date.parse(timestamp) <= Date.now()) return "";
+  return ` Resets ${new Intl.DateTimeFormat(undefined, {
+    month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short",
+  }).format(new Date(timestamp))}.`;
+}
+
+function quotaBlock(quota: GpuQuota): string | null {
+  if (quota.runsRemaining !== null && quota.runsRemaining <= 0) {
+    return `All ${quota.runsLimit ?? "available"} shared GPU runs are used.${resetLabel(quota.runsResetsAt ?? quota.resetsAt)} Your image and prompt are still here.`;
+  }
+  if (quota.remainingSeconds <= 0) {
+    return `The shared Hugging Face account has used its GPU time.${resetLabel(quota.resetsAt)} Your image and prompt are still here.`;
+  }
+  return null;
+}
+
+async function refreshQuota(): Promise<GpuQuota | null> {
+  const requestId = ++quotaRequestId;
+  try {
+    const response = await fetch(`${WORKER_URL}/quota`, { signal: AbortSignal.timeout(6000) });
+    if (!response.ok) throw new Error("GPU allowance unavailable");
+    const value: unknown = await response.json();
+    if (!value || typeof value !== "object") throw new Error("Unexpected GPU allowance response");
+    const data = value as Record<string, unknown>;
+    if (typeof data.remainingSeconds !== "number" || !Number.isFinite(data.remainingSeconds)) {
+      throw new Error("Unexpected GPU allowance response");
+    }
+    const quota: GpuQuota = {
+      remainingSeconds: Math.max(0, Math.floor(data.remainingSeconds)),
+      resetsAt: typeof data.resetsAt === "string" ? data.resetsAt : null,
+      runsRemaining: typeof data.runsRemaining === "number" && Number.isFinite(data.runsRemaining) ? Math.max(0, Math.floor(data.runsRemaining)) : null,
+      runsLimit: typeof data.runsLimit === "number" && Number.isFinite(data.runsLimit) ? Math.max(0, Math.floor(data.runsLimit)) : null,
+      runsResetsAt: typeof data.runsResetsAt === "string" ? data.runsResetsAt : null,
+    };
+    if (requestId === quotaRequestId) {
+      const blocked = quotaBlock(quota);
+      quotaEl.dataset.state = blocked ? "empty" : "ready";
+      quotaEl.textContent = blocked
+        ? blocked.replace(" Your image and prompt are still here.", "")
+        : `Shared GPU: ${quota.runsRemaining === null ? "" : `${quota.runsRemaining} run${quota.runsRemaining === 1 ? "" : "s"} left · `}${quota.remainingSeconds} seconds of GPU time left.${resetLabel(quota.runsResetsAt ?? quota.resetsAt)}`;
+    }
+    return quota;
+  } catch {
+    if (requestId === quotaRequestId) {
+      quotaEl.dataset.state = "unknown";
+      quotaEl.textContent = "Shared GPU allowance is unavailable. You can still try generating.";
+    }
+    return null;
+  }
+}
 
 // ---------- File handling ----------
 
@@ -214,6 +277,7 @@ cancelBtn.addEventListener("click", () => {
 async function runGeneration(): Promise<void> {
   if (!state.file || state.busy || !promptEl.value.trim()) return;
 
+  let blockedAtPreflight: GpuQuota | null = null;
   const controller = new AbortController();
   state.controller = controller;
   state.cancelReason = null;
@@ -225,11 +289,20 @@ async function runGeneration(): Promise<void> {
 
   setBusy(true);
   showResultState("loading");
-  loadingMsg.textContent = "Uploading image and submitting the job…";
-  setStatus("Submitting to the shared GPU. You can cancel while it runs.");
+  loadingMsg.textContent = "Checking shared GPU allowance…";
+  setStatus("Checking shared GPU allowance before submitting.");
   resultVideo.pause();
 
   try {
+    const quota = await refreshQuota();
+    const blocked = quota && quotaBlock(quota);
+    if (blocked) {
+      blockedAtPreflight = quota;
+      throw new Error(blocked);
+    }
+    loadingMsg.textContent = "Uploading image and submitting the job…";
+    setStatus("Submitting to the shared GPU. You can cancel while it runs.");
+
     const form = new FormData();
     form.append("image", state.file);
     form.append("params", JSON.stringify({
@@ -258,16 +331,19 @@ async function runGeneration(): Promise<void> {
     showResultState("ready");
     setStatus("Video ready. Use Download MP4 to save it.", "success");
     addToHistory(videoUrl);
+    void refreshQuota();
   } catch (err) {
     if (controller.signal.aborted && state.cancelReason === "user") {
       showResultState("empty");
       setStatus("Stopped waiting for this result. The GPU job may continue in the background.");
     } else {
+      const latestQuota = blockedAtPreflight ?? await refreshQuota();
       const message = state.cancelReason === "timeout"
         ? "No result arrived after eight minutes. The shared GPU may be stalled; try again later."
-        : describeFailure(err);
+        : describeFailure(err, latestQuota);
       errorTitle.textContent = "Generation stopped";
       errorDetail.textContent = message;
+      retryBtn.textContent = latestQuota && quotaBlock(latestQuota) ? "Check again" : "Try again";
       showResultState("error");
       setStatus("Generation stopped. See the result panel for details.", "error");
     }
@@ -291,14 +367,19 @@ function startElapsedTimer(): () => void {
   return () => window.clearInterval(handle);
 }
 
-function describeFailure(err: unknown): string {
+const NO_UPSTREAM_DETAILS = "The video model stopped without giving a reason. The shared GPU may be busy; try again later.";
+
+function describeFailure(err: unknown, quota: GpuQuota | null): string {
   const message = err instanceof Error ? err.message.trim() : String(err).trim();
+  if (message === NO_UPSTREAM_DETAILS && quota) {
+    return quotaBlock(quota) ?? `${message} Your image and prompt are still here.`;
+  }
   if (err instanceof TypeError && /fetch|network/i.test(message)) {
     return "Could not reach the video service. Check your connection and try again.";
   }
   return message && message !== "null" && message !== "undefined"
     ? message
-    : "The Space stopped without details. It may not have enough GPU allowance for these settings. Try a shorter clip with fewer steps, or retry later.";
+    : NO_UPSTREAM_DETAILS;
 }
 
 /**
@@ -400,7 +481,7 @@ function parseUpstreamError(data: string): string {
     const message = payload.message ?? payload.error;
     if (typeof message === "string" && message.trim()) return message.trim();
   }
-  return "The Space stopped without details. It may not have enough GPU allowance for these settings. Try a shorter clip with fewer steps, or retry later.";
+  return NO_UPSTREAM_DETAILS;
 }
 
 // Hardcoded because the browser doesn't know the Space URL and we'd rather
@@ -482,3 +563,4 @@ function addToHistory(url: string) {
 // Initial UI state
 showResultState("empty");
 refreshGenerateButton();
+void refreshQuota();

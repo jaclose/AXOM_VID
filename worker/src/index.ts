@@ -80,6 +80,31 @@ export default {
             error: "Generation is not configured yet. The site owner needs to add a Hugging Face token.",
           }, 503), origin, env);
         }
+        // A free account can have GPU seconds left after its daily run count is
+        // exhausted. Check both before uploading a visitor's image to the Space.
+        try {
+          const quotaResponse = await handleQuota(env);
+          if (quotaResponse.ok) {
+            const quota = await quotaResponse.json() as ZeroGpuQuota;
+            if (quota.runsRemaining === 0) {
+              return withCors(jsonResponse({
+                error: `All ${quota.runsLimit ?? "daily"} Hugging Face runs are used. The allowance resets at ${quota.runsResetsAt ?? quota.resetsAt ?? "the next daily reset"}.`,
+                code: "runs_exhausted",
+                resetsAt: quota.runsResetsAt ?? quota.resetsAt,
+              }, 429), origin, env);
+            }
+            if (quota.remainingSeconds === 0) {
+              return withCors(jsonResponse({
+                error: `Hugging Face GPU time is used up. The allowance resets at ${quota.resetsAt ?? "the next daily reset"}.`,
+                code: "gpu_exhausted",
+                resetsAt: quota.resetsAt,
+              }, 429), origin, env);
+            }
+          }
+        } catch {
+          // Quota diagnostics must not prevent generation when Hugging Face's
+          // quota endpoint is temporarily unavailable.
+        }
         if (env.GENERATION_RATE_LIMIT) {
           const { success } = await env.GENERATION_RATE_LIMIT.limit({ key: "generate" });
           if (!success) {
@@ -98,6 +123,15 @@ export default {
 
     if (req.method === "GET" && url.pathname === "/health") {
       return withCors(jsonResponse({ ok: true, configured: Boolean(env.HF_TOKEN?.trim()) }), origin, env);
+    }
+
+    if (req.method === "GET" && url.pathname === "/quota") {
+      try {
+        const result = await handleQuota(env);
+        return withCors(result, origin, env);
+      } catch {
+        return withCors(jsonResponse({ error: "Could not check Hugging Face GPU allowance." }, 502), origin, env);
+      }
     }
 
     if (req.method === "GET" && url.pathname === "/download") {
@@ -197,6 +231,53 @@ async function handleGenerate(req: Request, env: Env): Promise<Response> {
       "X-HF-Space-Base": env.HF_SPACE_BASE,
     },
   });
+}
+
+interface ZeroGpuQuota {
+  remainingSeconds: number;
+  resetsAt: string | null;
+  runsRemaining: number | null;
+  runsLimit: number | null;
+  runsResetsAt: string | null;
+}
+
+async function handleQuota(env: Env): Promise<Response> {
+  if (!env.HF_TOKEN?.trim()) {
+    return jsonResponse({ error: "Hugging Face token is not configured." }, 503);
+  }
+  const upstream = await fetch("https://huggingface.co/api/spaces/zero-gpu/quota", {
+    headers: authHeaders(env),
+  });
+  if (upstream.status === 401 || upstream.status === 403) {
+    return jsonResponse({ error: "This token cannot read its ZeroGPU allowance." }, 403);
+  }
+  if (!upstream.ok) {
+    return jsonResponse({ error: "Hugging Face GPU allowance is temporarily unavailable." }, 502);
+  }
+  const data = await upstream.json() as {
+    current?: unknown;
+    resetsAt?: unknown;
+    runs?: { remaining?: unknown; limit?: unknown; resetsAt?: unknown };
+  };
+  if (typeof data.current !== "number" || !Number.isFinite(data.current)) {
+    return jsonResponse({ error: "Hugging Face returned an unexpected allowance response." }, 502);
+  }
+  const quota: ZeroGpuQuota = {
+    remainingSeconds: Math.max(0, Math.floor(data.current)),
+    resetsAt: typeof data.resetsAt === "string" ? data.resetsAt : null,
+    runsRemaining: finiteCount(data.runs?.remaining),
+    runsLimit: finiteCount(data.runs?.limit),
+    runsResetsAt: typeof data.runs?.resetsAt === "string" ? data.runs.resetsAt : null,
+  };
+  const response = jsonResponse(quota);
+  response.headers.set("Cache-Control", "no-store");
+  return response;
+}
+
+function finiteCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, Math.floor(value))
+    : null;
 }
 
 async function handleDownload(rawUrl: string | null, env: Env): Promise<Response> {

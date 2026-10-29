@@ -33,6 +33,7 @@ AXOM_VID is a separate image-to-video project that uses the AXOM visual identity
 - Download generated videos as MP4
 - Zero tracking and no signup for visitors
 - Clear error, retry, stop-waiting, and elapsed-time states; upstream failures without details no longer appear as `Failed: null`
+- Live shared GPU allowance, including the daily run count and local reset time; exhausted accounts are blocked before image upload
 
 ## Tech stack
 
@@ -60,10 +61,11 @@ The Worker exists for two reasons. Browsers can't reliably call Hugging Face Spa
   <img src="assets/handoff.svg" alt="A sequence diagram. The browser posts one multipart form to the Worker. The Worker uploads the image to the Gradio Space, submits the job, gets an event id back, opens the server-sent event stream for it, and returns that response body as its own without reading it. The events then flow from the Space through Cloudflare to the browser, which parses the complete event and pulls the video URL out." width="880">
 </p>
 
-The Worker uploads the image, submits the job with its server-held token, then
+The Worker checks the account's ZeroGPU allowance, uploads the image, submits the job with its server-held token, then
 opens the upstream event stream and returns that stream to the browser. A
 restricted download route streams the finished MP4 as an attachment. The Worker
-does not buffer the generated clip or expose the token to the page.
+does not buffer the generated clip or expose the token to the page. Its `/quota`
+route returns only remaining GPU seconds, remaining runs, and reset times.
 
 The price is that the browser has to speak SSE. `web/src/scripts/studio.ts`
 buffers the stream, splits it on blank lines, and waits for the `complete`
@@ -100,7 +102,7 @@ Set `PUBLIC_WORKER_URL` to `https://axomvidjd.jafardabbagh.workers.dev` under **
 ## Limitations
 
 - Generation starts at 1.5 seconds and 3 inference steps to favor a first result. Advanced options allow up to 4.5 seconds and 12 steps; longer clips use more GPU time and may fail on the shared Space.
-- The upstream Space uses shared ZeroGPU hardware. Queues, cold starts, service failures, and daily account quota can interrupt generation. [Hugging Face lists 5 minutes of daily GPU quota for free accounts](https://huggingface.co/docs/hub/spaces-zerogpu); this Space requests an xlarge GPU, which uses quota at 2×. Every public visitor shares the token owner's quota.
+- The upstream Space uses shared ZeroGPU hardware. Queues, cold starts, service failures, and daily account quota can interrupt generation. Free accounts can reach their daily run cap even with GPU seconds remaining; `/quota` reports both limits and the page shows the reset time. [Hugging Face documents its ZeroGPU quota API](https://huggingface.co/docs/huggingface_hub/guides/manage-spaces#track-your-zerogpu-quota). This Space requests an xlarge GPU, which uses quota at 2×. Every public visitor shares the token owner's quota. A paid or independently hosted backend is required for dependable public capacity.
 - The upstream Space can change or disappear. A backend change may require updating `HF_SPACE_BASE` and the input mapping in `worker/src/index.ts`.
 - Cloudflare [documents no hard wall-time limit for HTTP Workers while the client remains connected](https://developers.cloudflare.com/workers/platform/limits/). A broken browser connection or upstream stream can still stop a run.
 
