@@ -102,7 +102,7 @@ Set `PUBLIC_WORKER_URL` to `https://axomvidjd.jafardabbagh.workers.dev` under **
 
 ## Optional private GPU mode (billable, owner only)
 
-The free shared mode remains the default. AXOM_VID also supports a **separate, explicit** private rendering selection using fal.ai's Wan 2.2 5B endpoint, which currently lists approximately **$0.15 per video**. The provider can change pricing and reject jobs according to its policies. Private jobs do not consume your Hugging Face ZeroGPU allowance, but they are not free or guaranteed unlimited: billing credits, rate limits, and GPU availability still apply.
+The free shared mode remains the default. AXOM_VID also supports a **separate, explicit** private rendering selection using fal.ai's Wan 2.2 5B endpoint, which currently lists approximately **$0.15 per video**. The provider can change pricing and reject jobs according to its policies. Private jobs do not consume your Hugging Face ZeroGPU allowance, but they are not free or guaranteed unlimited: billing credits, rate limits, and GPU availability still apply. This mode does not bypass fal.ai's acceptable-use rules or model safety checks; some prompts and images may be rejected. Only submit content permitted by the provider.
 
 This feature is **off** unless *both* Cloudflare Worker secrets are configured:
 
