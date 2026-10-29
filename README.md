@@ -106,7 +106,7 @@ The free shared mode remains the default. AXOM_VID also supports a **separate, e
 
 This feature is **off** unless *both* Cloudflare Worker secrets are configured:
 
-1. Create a fal.ai account, enable billing with a spending limit, and generate a fal API key.
+1. Create a fal.ai account, buy a small prepaid credit balance, and generate a fal API key. Monitor remaining credits and any automatic top-up setting; do not assume that a hard spend limit is enabled.
 2. In Cloudflare > Workers & Pages > `axomvidjd` > Settings > Variables and secrets, add `FAL_KEY` as a **secret**. Never put this key in frontend code or a public variable.
 3. Generate a separate long random code locally (for example, `openssl rand -hex 32`). Add that as the Cloudflare Worker secret `PRIVATE_ACCESS_KEY`. Do not reuse your fal key as the access code.
 4. Deploy the changed Worker from `worker/` with `pnpm wrangler deploy` and deploy the matching website changes.
