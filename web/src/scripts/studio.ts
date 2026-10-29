@@ -22,7 +22,11 @@
 // Type-safe handle on the Worker URL injected at build time via import.meta.env.
 // Use the deployed Worker by default so the local preview works immediately.
 const WORKER_URL = import.meta.env.PUBLIC_WORKER_URL || "https://axomvidjd.jafardabbagh.workers.dev";
-const LOCAL_STUDIO = ["localhost", "127.0.0.1"].includes(window.location.hostname) && window.location.port === "8765";
+// The launcher chooses the first free port between 8765 and 8775.
+// Only loopback origins in this small dedicated range may access local GPU UI.
+const studioPort = Number(window.location.port);
+const LOCAL_STUDIO = ["localhost", "127.0.0.1"].includes(window.location.hostname)
+  && Number.isInteger(studioPort) && studioPort >= 8765 && studioPort <= 8775;
 
 // ---------- DOM lookup helpers ----------
 
