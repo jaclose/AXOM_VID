@@ -370,39 +370,62 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
 
             portrait = settings["orientation"] == "portrait"
             seconds = settings["duration_seconds"]
+            count = settings.get("batch_count", 1)
+            prompts = settings.get("prompts") or [settings["prompt"].strip()] * count
             args = {
                 "mode": "i2v",
                 "engine": "ltx",
-                "prompt": settings["prompt"].strip(),
                 "image": image_path,
                 "width": "288" if portrait else "512",
                 "height": "512" if portrait else "288",
-                "frames": str(seconds * 24 + 1),
+                # 30-120 second takes are chained in Phosphene, one 10s part
+                # at a time; this avoids requesting an impossible single pass.
+                "frames": str(241 if seconds in LONG_TAKES else seconds * 24 + 1),
                 "frame_rate": "24",
                 "steps": "8",
                 "seed": "-1",
-                "quality": "quick",
+                "quality": settings.get("quality", "quick"),
                 "temporal_mode": "native",
                 "upscale": "off",
                 "enhance": "false",
                 "open_when_done": "off",
-                "label": "AXOM_VID local image animation",
             }
-            queued = _json_response_from_upstream(
-                self.server.phosphene_url, "/queue/add",
-                body=urlencode(args).encode(),
-                content_type="application/x-www-form-urlencoded",
-            )
-            job_id = queued.get("id")
-            if not queued.get("ok") or not isinstance(job_id, str) or not re.fullmatch(r"j-[a-zA-Z0-9-]{1,100}", job_id):
-                raise BridgeFailure("Phosphene did not return a valid job ID.")
-            with self.server.job_lock:
-                # Retain only recent session jobs to prevent unbounded memory use.
-                if len(self.server.jobs) >= 100:
-                    oldest = min(self.server.jobs, key=self.server.jobs.get)
-                    del self.server.jobs[oldest]
-                self.server.jobs[job_id] = time.monotonic()
-            self._json({"jobId": job_id, "status": "queued"})
+            if seconds in LONG_TAKES:
+                args["take_seconds"] = str(seconds)
+
+            job_ids: list[str] = []
+            warning: str | None = None
+            for index, prompt in enumerate(prompts, start=1):
+                one_job = dict(args)
+                one_job["prompt"] = prompt.strip()
+                one_job["label"] = f"AXOM_VID · {seconds}s · render {index} of {count}"
+                try:
+                    queued = _json_response_from_upstream(
+                        self.server.phosphene_url, "/queue/add",
+                        body=urlencode(one_job).encode(),
+                        content_type="application/x-www-form-urlencoded",
+                    )
+                    job_id = queued.get("id")
+                    if (not queued.get("ok") or not isinstance(job_id, str)
+                            or not re.fullmatch(r"j-[a-zA-Z0-9-]{1,100}", job_id)):
+                        raise BridgeFailure("Phosphene did not return a valid job ID.")
+                except BridgeFailure as err:
+                    if not job_ids:
+                        raise
+                    warning = f"{len(job_ids)} of {count} renders queued. Remaining requests were not accepted: {err}"
+                    break
+                self.server.remember_job(job_id)
+                job_ids.append(job_id)
+            payload: dict[str, Any] = {
+                "jobId": job_ids[0],
+                "jobIds": job_ids,
+                "status": "queued",
+                "requested": count,
+                "accepted": len(job_ids),
+            }
+            if warning:
+                payload["warning"] = warning
+            self._json(payload)
         except BridgeFailure as err:
             self._fail(str(err), err.status)
         except (UnicodeError, ValueError) as err:
