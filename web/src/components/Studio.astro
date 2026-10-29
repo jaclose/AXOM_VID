@@ -106,6 +106,22 @@ const assetBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
               data-duration
               class="range-control w-full"
             />
+            <select id="local-duration" data-local-duration
+              class="prompt-input hidden w-full px-3 py-3">
+              <optgroup label="Single render">
+                <option value="3">3 seconds · fastest</option>
+                <option value="5">5 seconds</option>
+                <option value="7">7 seconds</option>
+                <option value="10">10 seconds · more memory</option>
+              </optgroup>
+              <optgroup label="Chained One Take · multiple GPU passes">
+                <option value="30">30 seconds · chained</option>
+                <option value="45">45 seconds · chained</option>
+                <option value="60">1 minute · chained</option>
+                <option value="90">1.5 minutes · chained</option>
+                <option value="120">2 minutes · chained</option>
+              </optgroup>
+            </select>
             <p id="duration-help" data-duration-help class="field-hint mt-1">Shorter clips usually finish sooner on a shared GPU.</p>
           </div>
           <div>
@@ -126,6 +142,38 @@ const assetBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
           </div>
         </div>
       </details>
+
+      <div data-local-settings class="hidden space-y-4 rounded-xl border border-white/10 p-4">
+        <div class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label for="local-batch" class="field-label block mb-2">Number of generations</label>
+            <select id="local-batch" data-local-batch class="prompt-input w-full px-3 py-2">
+              <option value="1">1 render</option>
+              <option value="2">2 variations</option>
+              <option value="3">3 variations</option>
+              <option value="4">4 variations</option>
+              <option value="5">5 variations</option>
+              <option value="6">6 variations</option>
+            </select>
+          </div>
+          <div>
+            <label for="local-quality" class="field-label block mb-2">Local quality</label>
+            <select id="local-quality" data-local-quality class="prompt-input w-full px-3 py-2">
+              <option value="quick">Quick · recommended for 18 GB</option>
+              <option value="balanced">Balanced · more memory/time</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label for="local-variations" class="field-label block mb-2">Optional prompt variations</label>
+          <textarea id="local-variations" rows="3" data-local-variations
+            class="prompt-input w-full px-3 py-2 resize-y"
+            placeholder="One distinct motion prompt per line, matching the number of generations. Leave empty to repeat the main prompt with random seeds."></textarea>
+          <p class="field-hint mt-1" data-local-hint>
+            Up to six jobs are queued one at a time, not rendered concurrently.
+          </p>
+        </div>
+      </div>
 
       <div class="action-row flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:gap-3">
         <button type="button" data-generate class="btn-primary min-h-12 sm:min-h-0" disabled>
@@ -176,8 +224,43 @@ const assetBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
         <video data-result-video controls playsinline aria-label="Generated video preview" class="result-video hidden w-full max-h-[420px] object-contain" preload="metadata"></video>
       </div>
 
-      <div class="flex items-center gap-3">
+      <div class="flex flex-wrap items-center gap-3">
         <a data-download class="btn-ghost hidden" download>Download MP4</a>
+        <button data-gif-download type="button" class="btn-ghost hidden">
+          Download GIF
+        </button>
+      </div>
+      <div data-gif-settings class="hidden grid gap-3 grid-cols-3">
+        <div>
+          <label for="gif-seconds" class="field-hint block mb-1">GIF length</label>
+          <select id="gif-seconds" data-gif-seconds class="prompt-input w-full px-2 py-2">
+            <option value="3">3s</option><option value="5">5s</option>
+            <option value="10" selected>10s</option><option value="15">15s</option>
+          </select>
+        </div>
+        <div>
+          <label for="gif-width" class="field-hint block mb-1">Width</label>
+          <select id="gif-width" data-gif-width class="prompt-input w-full px-2 py-2">
+            <option value="320">320px</option><option value="480" selected>480px</option>
+            <option value="640">640px</option>
+          </select>
+        </div>
+        <div>
+          <label for="gif-fps" class="field-hint block mb-1">GIF FPS</label>
+          <select id="gif-fps" data-gif-fps class="prompt-input w-full px-2 py-2">
+            <option value="8">8</option><option value="12" selected>12</option>
+            <option value="15">15</option>
+          </select>
+        </div>
+        <p class="field-hint col-span-3">GIF export uses FFmpeg on your Mac. Long clips export at most the first 15 seconds.</p>
+      </div>
+
+      <div data-local-queue class="hidden space-y-3">
+        <div class="flex flex-wrap justify-between items-center gap-2">
+          <h3 class="field-label">Local render queue</h3>
+          <button type="button" data-queue-refresh class="btn-ghost text-xs">Refresh statuses</button>
+        </div>
+        <ul data-local-job-list class="grid gap-3"></ul>
       </div>
 
       <!-- In-session history. Cleared on reload, we deliberately don't persist
