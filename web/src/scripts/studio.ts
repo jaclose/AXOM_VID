@@ -22,6 +22,7 @@
 // Type-safe handle on the Worker URL injected at build time via import.meta.env.
 // Use the deployed Worker by default so the local preview works immediately.
 const WORKER_URL = import.meta.env.PUBLIC_WORKER_URL || "https://axomvidjd.jafardabbagh.workers.dev";
+const LOCAL_STUDIO = ["localhost", "127.0.0.1"].includes(window.location.hostname) && window.location.port === "8765";
 
 // ---------- DOM lookup helpers ----------
 
@@ -48,6 +49,12 @@ const buttonLabel  = $<HTMLSpanElement>("[data-button-label]");
 const spinnerEl    = $<HTMLSpanElement>("[data-spinner]");
 const statusEl     = $<HTMLParagraphElement>("[data-status]");
 const quotaEl      = $<HTMLParagraphElement>("[data-quota]");
+const engineEl      = $<HTMLSelectElement>("[data-engine]");
+const engineHelp    = $<HTMLParagraphElement>("[data-engine-help]");
+const localOpen     = $<HTMLParagraphElement>("[data-local-open]");
+const localCheck    = $<HTMLButtonElement>("[data-local-check]");
+const durationHelp  = $<HTMLParagraphElement>("[data-duration-help]");
+const stepsHelp     = $<HTMLParagraphElement>("[data-steps-help]");
 const resultEmpty  = $<HTMLDivElement>("[data-result-empty]");
 const resultLoad   = $<HTMLDivElement>("[data-result-loading]");
 const resultError  = $<HTMLDivElement>("[data-result-error]");
@@ -84,6 +91,8 @@ interface GpuQuota {
 }
 
 let quotaRequestId = 0;
+let localEngineReady = false;
+let localCheckId = 0;
 
 function resetLabel(timestamp: string | null): string {
   if (!timestamp || Number.isNaN(Date.parse(timestamp)) || Date.parse(timestamp) <= Date.now()) return "";
@@ -103,6 +112,7 @@ function quotaBlock(quota: GpuQuota): string | null {
 }
 
 async function refreshQuota(): Promise<GpuQuota | null> {
+  if (engineEl.value === "local") return null;
   const requestId = ++quotaRequestId;
   try {
     const response = await fetch(`${WORKER_URL}/quota`, { signal: AbortSignal.timeout(6000) });
@@ -120,7 +130,7 @@ async function refreshQuota(): Promise<GpuQuota | null> {
       runsLimit: typeof data.runsLimit === "number" && Number.isFinite(data.runsLimit) ? Math.max(0, Math.floor(data.runsLimit)) : null,
       runsResetsAt: typeof data.runsResetsAt === "string" ? data.runsResetsAt : null,
     };
-    if (requestId === quotaRequestId) {
+    if (requestId === quotaRequestId && engineEl.value === "shared") {
       const blocked = quotaBlock(quota);
       quotaEl.dataset.state = blocked ? "empty" : "ready";
       quotaEl.textContent = blocked
@@ -240,7 +250,8 @@ promptEl.addEventListener("input", refreshGenerateButton);
 // ---------- UI state helpers ----------
 
 function refreshGenerateButton() {
-  const ready = !!state.file && promptEl.value.trim().length > 0 && !state.busy;
+  const ready = !!state.file && promptEl.value.trim().length > 0 && !state.busy &&
+    (engineEl.value === "shared" || (LOCAL_STUDIO && localEngineReady));
   generateBtn.disabled = !ready;
 }
 
@@ -253,6 +264,7 @@ function setStatus(text: string, tone: StatusTone = "info") {
 function setBusy(busy: boolean) {
   state.busy = busy;
   spinnerEl.classList.toggle("hidden", !busy);
+  engineEl.disabled = busy;
   buttonLabel.textContent = busy ? "Generating..." : "Generate video";
   refreshGenerateButton();
 }
@@ -275,6 +287,7 @@ cancelBtn.addEventListener("click", () => {
 });
 
 async function runGeneration(): Promise<void> {
+  if (engineEl.value === "local") return runLocalGeneration();
   if (!state.file || state.busy || !promptEl.value.trim()) return;
 
   let blockedAtPreflight: GpuQuota | null = null;
@@ -509,6 +522,7 @@ function extractVideoUrl(fileData: unknown, spaceBase: string): string | null {
 }
 
 function downloadUrl(videoUrl: string): string {
+  if (videoUrl.startsWith("/local/video?jobId=")) return `${videoUrl}&download=1`;
   return `${WORKER_URL}/download?url=${encodeURIComponent(videoUrl)}`;
 }
 
@@ -561,7 +575,7 @@ function addToHistory(url: string) {
   historyList.prepend(li);
 }
 
-// Initial UI state
+// Initial UI state: only the loopback server can submit no-quota local jobs.
 showResultState("empty");
-refreshGenerateButton();
-void refreshQuota();
+engineEl.value = LOCAL_STUDIO ? "local" : "shared";
+applyEngineMode();
