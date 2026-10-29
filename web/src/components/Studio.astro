@@ -66,6 +66,25 @@ const assetBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
         </p>
       </div>
 
+      <div class="space-y-2">
+        <label for="render-service" class="field-label block">Rendering service</label>
+        <select id="render-service" class="prompt-input w-full px-4 py-3" data-render-service>
+          <option value="shared">Shared GPU · free allowance</option>
+          <option value="private">Private GPU · pay per video</option>
+        </select>
+        <p class="field-hint" data-service-help>Shared Hugging Face GPU. Daily run limits apply to everyone using this site.</p>
+        <div class="hidden mt-3 space-y-2" data-private-key-wrap>
+          <label for="private-access-key" class="field-label block">Private access code</label>
+          <input id="private-access-key" type="password" autocomplete="off" spellcheck="false"
+            class="prompt-input w-full px-4 py-3" data-private-access-key
+            placeholder="Owner access code" aria-describedby="private-key-help" />
+          <p id="private-key-help" class="field-hint">
+            Owner-only mode. Wan 2.2 5B costs approximately $0.15 per submitted clip, paid to the inference provider.
+            Your access code stays in this browser tab and is never stored by AXOM_VID.
+          </p>
+        </div>
+      </div>
+
       <details class="advanced-panel">
         <summary class="advanced-summary cursor-pointer select-none px-4 py-3">
           Advanced options
@@ -85,7 +104,7 @@ const assetBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
               data-duration
               class="range-control w-full"
             />
-            <p id="duration-help" class="field-hint mt-1">Shorter clips usually finish sooner on a shared GPU.</p>
+            <p id="duration-help" data-duration-help class="field-hint mt-1">Shorter clips usually finish sooner on a shared GPU.</p>
           </div>
           <div>
             <label for="steps" class="range-label flex items-center justify-between">
@@ -101,7 +120,7 @@ const assetBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
               data-steps
               class="range-control w-full"
             />
-            <p id="steps-help" class="field-hint mt-1">More steps may improve detail, but take longer.</p>
+            <p id="steps-help" data-steps-help class="field-hint mt-1">More steps may improve detail, but take longer.</p>
           </div>
         </div>
       </details>
