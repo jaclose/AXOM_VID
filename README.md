@@ -4,7 +4,7 @@
 
 # AXOM_VID
 
-**Animate a still image with Wan 2.2 in your browser. Free. Open source.**
+**Open-source image-to-video: unlimited local Mac attempts without paid credits, or optional quota-limited shared cloud rendering.**
 
 [This deployment](https://jaclose.github.io/AXOM_VID/) · [Original NiftyVid demo](https://igorcsis.github.io/nifty-vid/) · [Original source](https://github.com/IgorCSIS/nifty-vid)
 
@@ -18,9 +18,9 @@
 
 ## What it does
 
-Drop a photo, write a short motion prompt ("slow camera push, leaves drifting"), and wait for a short MP4 of that image animated. AXOM_VID sends the image and prompt to a public Hugging Face Space running Wan 2.2 image-to-video. Jobs use a shared GPU, so the queue and render can take minutes.
+Drop a photo, write a short motion prompt ("slow camera push, leaves drifting"), and generate an MP4. AXOM_VID has two distinct engines: **Local Mac** uses open-source Phosphene LTX image-to-video without a provider quota or per-video fees, while **Shared cloud GPU** sends a job to a free, quota-limited Hugging Face Wan 2.2 Space.
 
-The site is static and hosted on GitHub Pages. Visitors do not need an account, but the deployment owner must configure a Hugging Face token on the proxy Worker. Every visitor's generation uses that account's GPU quota.
+The public site is static and hosted on GitHub Pages. Its optional shared-cloud mode uses the deployment owner's Hugging Face quota. The **no-quota Mac mode requires the separate loopback studio** started on the user's own Mac; a public GitHub Pages page cannot run an offline model on a remote computer.
 
 AXOM_VID is a separate image-to-video project that uses the AXOM visual identity. It is derived from [NiftyVid](https://github.com/IgorCSIS/nifty-vid) by Igor Lima under the MIT license; it is not part of the AXOM study app.
 
@@ -34,6 +34,7 @@ AXOM_VID is a separate image-to-video project that uses the AXOM visual identity
 - Zero tracking and no signup for visitors
 - Clear error, retry, stop-waiting, and elapsed-time states; upstream failures without details no longer appear as `Failed: null`
 - Live shared GPU allowance, including the daily run count and local reset time; exhausted accounts are blocked before image upload
+- **Local Mac · no daily limit**: Phosphene LTX image-to-video, local queue progress, and MP4 downloads without a cloud inference account. Requires a locally running Mac GPU and a one-time model installation.
 
 ## Tech stack
 
@@ -42,7 +43,7 @@ AXOM_VID is a separate image-to-video project that uses the AXOM visual identity
 | Frontend | Astro 4 + Tailwind 3 + TypeScript |
 | Hosting | GitHub Pages (static) |
 | Edge proxy | Cloudflare Worker (free tier) |
-| Inference | Wan 2.2 image-to-video, on a public Hugging Face Space |
+| Inference | Free local Phosphene LTX-2.5 on Apple Silicon; optional quota-limited Hugging Face Wan 2.2 |
 | Tooling | pnpm 9, Wrangler 4, GitHub Actions |
 
 ## Architecture
@@ -52,6 +53,8 @@ AXOM_VID is a separate image-to-video project that uses the AXOM visual identity
    GH Pages       axomvidjd.jafardabbagh.workers.dev
                   HF_TOKEN stored as a secret
 ```
+
+The diagram above covers **shared cloud mode**. For unmetered local mode, the Astro app connects only to a localhost Python bridge at `127.0.0.1:8765`; that bridge talks to the Phosphene panel at `127.0.0.1:8198`, and video inference runs on the Mac GPU. No Cloudflare or Hugging Face generation service is involved. See [the local installation guide](local/README.md).
 
 The Worker exists for two reasons. Browsers can't reliably call Hugging Face Spaces because of CORS, and we want one stable URL we control so the upstream backend can change without redeploying the static site. Today the Worker proxies to a public Space; tomorrow it could swap to fal.ai, Replicate, or a private Space without touching the frontend.
 
@@ -71,6 +74,22 @@ The price is that the browser has to speak SSE. `web/src/scripts/studio.ts`
 buffers the stream, splits it on blank lines, and waits for the `complete`
 event to pull the video URL out of the return tuple. That file and
 `worker/src/index.ts` are two halves of one contract.
+
+## No cloud run limit: local Mac studio
+
+**Use this for unlimited local attempts without subscriptions or per-video inference charges.** You need an Apple Silicon Mac with adequate memory and disk space; 18 GB unified RAM supports Phosphene's reduced-memory LTX profile. The base installation uses about 27.5 GB and additional models about 10.7 GB, so use an external SSD if needed.
+
+1. Install [Pinokio](https://desktop.pinokio.co/) and choose an external SSD as Pinokio Home in Settings if internal space is limited.
+2. Install and start [Phosphene](https://github.com/mrbizarro/Phosphene) in Pinokio. Its panel runs at `http://127.0.0.1:8198`.
+3. In the separate AXOM_VID checkout, start the local frontend and bridge:
+
+```bash
+bash local/start.command
+```
+
+4. Open **http://127.0.0.1:8765/AXOM_VID/** and select **Local Mac**. The local engine provides video generation without a daily count or paid service.
+
+This mode uses electricity, CPU/GPU time, memory, and local storage, and it may be slower and lower resolution than cloud NVIDIA hardware. It works only while the Mac and Phosphene are running. Read the [detailed installation and limitations](local/README.md) before attempting a model download. **The public website cannot supply a free unlimited cloud GPU.**
 
 ## Run locally
 
