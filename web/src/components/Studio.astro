@@ -66,6 +66,27 @@ const assetBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
         </p>
       </div>
 
+      <div class="space-y-2">
+        <label for="render-engine" class="field-label block">Render engine</label>
+        <select id="render-engine" data-engine
+          class="prompt-input w-full px-4 py-3">
+          <option value="local">Local Mac · no daily limit · no API fees</option>
+          <option value="shared">Shared cloud GPU · daily allowance</option>
+        </select>
+        <p data-engine-help class="field-hint">
+          Local renders run on your own Mac with Phosphene installed.
+        </p>
+        <p data-local-open class="hidden field-hint">
+          Start the local studio on your Mac, then
+          <a href="http://127.0.0.1:8765/AXOM_VID/" target="_blank" rel="noopener noreferrer"
+             class="underline">open your local studio</a>.
+          The public website cannot use your Mac GPU remotely.
+        </p>
+        <button data-local-check type="button" class="btn-ghost hidden text-xs">
+          Check local engine
+        </button>
+      </div>
+
       <details class="advanced-panel">
         <summary class="advanced-summary cursor-pointer select-none px-4 py-3">
           Advanced options
@@ -85,7 +106,7 @@ const assetBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
               data-duration
               class="range-control w-full"
             />
-            <p id="duration-help" class="field-hint mt-1">Shorter clips usually finish sooner on a shared GPU.</p>
+            <p id="duration-help" data-duration-help class="field-hint mt-1">Shorter clips usually finish sooner on a shared GPU.</p>
           </div>
           <div>
             <label for="steps" class="range-label flex items-center justify-between">
@@ -101,7 +122,7 @@ const assetBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
               data-steps
               class="range-control w-full"
             />
-            <p id="steps-help" class="field-hint mt-1">More steps may improve detail, but take longer.</p>
+            <p id="steps-help" data-steps-help class="field-hint mt-1">More steps may improve detail, but take longer.</p>
           </div>
         </div>
       </details>
@@ -115,7 +136,7 @@ const assetBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
           Add an image to start.
         </p>
       </div>
-      <p data-quota class="quota-line" role="status" aria-live="polite">Checking shared GPU allowance…</p>
+      <p data-quota class="quota-line" role="status" aria-live="polite">Checking render engine…</p>
     </div>
 
     <!-- RIGHT COLUMN: output -->
