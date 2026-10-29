@@ -276,12 +276,14 @@ class LocalBridgeTests(unittest.TestCase):
         self.assertEqual(headers["Content-Type"], "image/gif")
         self.assertIn("attachment", headers["Content-Disposition"])
 
-    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg not installed on test runner")
+    @unittest.skipUnless(shutil.which("ffmpeg") or os.environ.get("AXOM_FFMPEG"),
+                         "FFmpeg not installed on test runner")
     def test_actual_ffmpeg_converts_synthetic_mp4_to_gif(self):
         original = MockPhosphene.result_file.read_bytes()
         try:
             subprocess.run([
-                shutil.which("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
+                os.environ.get("AXOM_FFMPEG") or shutil.which("ffmpeg"),
+                "-hide_banner", "-loglevel", "error", "-y",
                 "-f", "lavfi", "-i", "testsrc=duration=2:size=320x180:rate=24",
                 "-c:v", "mpeg4", "-q:v", "5",
                 str(MockPhosphene.result_file),
