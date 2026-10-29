@@ -15,6 +15,7 @@ from local.acceptance import (
     inspect_install_state,
     make_reference_png,
     run_smoke_test,
+    run_preflight,
 )
 
 
@@ -112,6 +113,48 @@ class AcceptanceTests(unittest.TestCase):
             self.assertTrue((root / "smoke-video.gif").exists())
             self.assertTrue((root / "acceptance-result.json").exists())
             self.assertEqual(len([c for c in calls if c[0] == "POST"]), 1)
+
+    def test_preflight_blocks_gpu_test_while_another_local_job_is_active(self):
+        def fetch(url):
+            if url.endswith(":8765/local/health"):
+                return {"online": True, "provider": "Phosphene LTX local"}
+            if url.endswith(":8198/status"):
+                return {
+                    "running": True, "current": {"id": "j-comfy-ongoing"},
+                    "queue": [{"id": "j-someone-else"}],
+                    "gpu": {"busy": True, "holder": "queue"},
+                    "deferred_downloads": {"active": False, "state": "done"},
+                }
+            if url.endswith(":8198/oneshot/options"):
+                return {"engines": {"ltx": {"available": True}}}
+            return None
+        report = run_preflight(fetch)
+        self.assertTrue(report["model"]["ready_to_test"])
+        self.assertTrue(report["local_gpu_busy"])
+        self.assertFalse(report["ready_to_render"])
+
+    def test_preflight_can_accept_idle_model_without_other_jobs(self):
+        def fetch(url):
+            if url.endswith(":8765/local/health"):
+                return {"online": True, "provider": "Phosphene LTX local"}
+            if url.endswith(":8198/status"):
+                return {"running": False, "current": None, "queue": [],
+                        "gpu": {"busy": False},
+                        "deferred_downloads": {"active": False, "state": "done"}}
+            if url.endswith(":8198/oneshot/options"):
+                return {"engines": {"ltx": {"available": True}}}
+            if url.endswith(":8188/system_stats"):
+                return {"system": {"os": "posix"}}
+            return None
+        report = run_preflight(fetch)
+        self.assertTrue(report["ready_to_render"])
+        self.assertTrue(report["comfyui_http_responsive"])
+        self.assertFalse(report["local_gpu_busy"])
+
+    def test_render_mode_rejects_a_non_studio_local_port(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):
+                run_smoke_test("http://127.0.0.1:8188", Path(directory), max_wait_seconds=5)
 
     def test_smoke_test_does_not_claim_success_for_an_invalid_mp4(self):
         with tempfile.TemporaryDirectory() as base:
