@@ -10,10 +10,14 @@ Phosphene API: https://github.com/mrbizarro/Phosphene/blob/main/docs/API.md
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import secrets
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 from email import policy
@@ -28,6 +32,9 @@ from urllib.request import Request, urlopen
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_BYTES = MAX_IMAGE_BYTES + 32 * 1024
 MAX_PROMPT = 1200
+ALLOWED_DURATIONS = (3, 5, 7, 10, 30, 45, 60, 90, 120)
+LONG_TAKES = (30, 45, 60, 90, 120)
+MAX_BATCH = 6
 DEFAULT_PHOSPHENE_URL = "http://127.0.0.1:8198"
 ALLOWED_IMAGE_TYPES = {
     "image/png": (b"\x89PNG\r\n\x1a\n", "png"),
@@ -120,10 +127,22 @@ def parse_form(data: bytes, content_type: str) -> tuple[bytes, str, dict[str, An
     if not isinstance(prompt, str) or not (1 <= len(prompt.strip()) <= MAX_PROMPT):
         raise BridgeFailure("Enter a motion prompt of 1 to 1,200 characters.", 400)
     seconds = settings.get("duration_seconds")
-    if seconds not in (3, 5) or isinstance(seconds, bool):
-        raise BridgeFailure("Local clips support 3 or 5 seconds.", 400)
+    if seconds not in ALLOWED_DURATIONS or isinstance(seconds, bool):
+        raise BridgeFailure("Duration must be 3, 5, 7, 10, 30, 45, 60, 90 or 120 seconds.", 400)
     if settings.get("orientation") not in ("landscape", "portrait"):
         raise BridgeFailure("Choose portrait or landscape orientation.", 400)
+    count = settings.get("batch_count", 1)
+    if isinstance(count, bool) or not isinstance(count, int) or not (1 <= count <= MAX_BATCH):
+        raise BridgeFailure("Batch size must be an integer from 1 to 6.", 400)
+    prompts = settings.get("prompts")
+    if prompts is not None:
+        if not isinstance(prompts, list) or len(prompts) != count:
+            raise BridgeFailure("Provide exactly one motion prompt for each batch render.", 400)
+        if any(not isinstance(p, str) or not (1 <= len(p.strip()) <= MAX_PROMPT) for p in prompts):
+            raise BridgeFailure("Each batch prompt must contain 1–1,200 characters.", 400)
+    quality = settings.get("quality", "quick")
+    if quality not in ("quick", "balanced"):
+        raise BridgeFailure("Local quality must be quick or balanced.", 400)
     return image, mime, settings
 
 
@@ -187,9 +206,46 @@ class LocalVideoServer(ThreadingHTTPServer):
             raise ValueError("Phosphene URL must be an HTTP loopback server.")
         self.phosphene_url = phosphene_url.rstrip("/")
         self.static_root = Path(static_root).resolve()
+        self.state_file = self.static_root.parent / ".axom-local-state" / "jobs.json"
         self.jobs: dict[str, float] = {}
         self.job_lock = threading.Lock()
+        self.gif_lock = threading.Lock()
+        try:
+            payload = json.loads(self.state_file.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                for job_id, timestamp in payload.items():
+                    if (isinstance(job_id, str) and re.fullmatch(r"j-[a-zA-Z0-9-]{1,100}", job_id)
+                            and isinstance(timestamp, (int, float)) and not isinstance(timestamp, bool)
+                            and 0 < timestamp < time.time() + 3600):
+                        self.jobs[job_id] = float(timestamp)
+        except (OSError, ValueError):
+            pass  # First launch / corrupt file: stay local and begin a new session.
         super().__init__(server_address, handler)
+
+    def remember_job(self, job_id: str) -> None:
+        with self.job_lock:
+            self.jobs[job_id] = time.time()
+            # Keep a bounded list (30 days) on the owner's disk, not an online account.
+            cutoff = time.time() - 30 * 86400
+            self.jobs = {key: ts for key, ts in self.jobs.items() if ts > cutoff}
+            if len(self.jobs) > 500:
+                self.jobs = dict(sorted(self.jobs.items(), key=lambda row: row[1])[-500:])
+            tmp_path: Path | None = None
+            try:
+                self.state_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", dir=self.state_file.parent,
+                    prefix=".jobs-", suffix=".tmp", delete=False,
+                ) as output:
+                    tmp_path = Path(output.name)
+                    os.chmod(tmp_path, 0o600)
+                    json.dump(self.jobs, output)
+                tmp_path.replace(self.state_file)
+            except OSError:
+                # The GPU job has already been queued: never misreport failure
+                # just because the drive is temporarily read-only.
+                if tmp_path is not None:
+                    tmp_path.unlink(missing_ok=True)
 
 
 class LocalVideoHandler(SimpleHTTPRequestHandler):
@@ -269,6 +325,9 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
             if route.path == "/local/status":
                 self._handle_status(parse_qs(route.query).get("jobId", [""])[0])
                 return
+            if route.path == "/local/gif":
+                self._handle_gif(parse_qs(route.query))
+                return
             if route.path == "/local/video":
                 self._handle_video(
                     parse_qs(route.query).get("jobId", [""])[0],
@@ -316,39 +375,62 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
 
             portrait = settings["orientation"] == "portrait"
             seconds = settings["duration_seconds"]
+            count = settings.get("batch_count", 1)
+            prompts = settings.get("prompts") or [settings["prompt"].strip()] * count
             args = {
                 "mode": "i2v",
                 "engine": "ltx",
-                "prompt": settings["prompt"].strip(),
                 "image": image_path,
                 "width": "288" if portrait else "512",
                 "height": "512" if portrait else "288",
-                "frames": str(seconds * 24 + 1),
+                # 30-120 second takes are chained in Phosphene, one 10s part
+                # at a time; this avoids requesting an impossible single pass.
+                "frames": str(241 if seconds in LONG_TAKES else seconds * 24 + 1),
                 "frame_rate": "24",
                 "steps": "8",
                 "seed": "-1",
-                "quality": "quick",
+                "quality": settings.get("quality", "quick"),
                 "temporal_mode": "native",
                 "upscale": "off",
                 "enhance": "false",
                 "open_when_done": "off",
-                "label": "AXOM_VID local image animation",
             }
-            queued = _json_response_from_upstream(
-                self.server.phosphene_url, "/queue/add",
-                body=urlencode(args).encode(),
-                content_type="application/x-www-form-urlencoded",
-            )
-            job_id = queued.get("id")
-            if not queued.get("ok") or not isinstance(job_id, str) or not re.fullmatch(r"j-[a-zA-Z0-9-]{1,100}", job_id):
-                raise BridgeFailure("Phosphene did not return a valid job ID.")
-            with self.server.job_lock:
-                # Retain only recent session jobs to prevent unbounded memory use.
-                if len(self.server.jobs) >= 100:
-                    oldest = min(self.server.jobs, key=self.server.jobs.get)
-                    del self.server.jobs[oldest]
-                self.server.jobs[job_id] = time.monotonic()
-            self._json({"jobId": job_id, "status": "queued"})
+            if seconds in LONG_TAKES:
+                args["take_seconds"] = str(seconds)
+
+            job_ids: list[str] = []
+            warning: str | None = None
+            for index, prompt in enumerate(prompts, start=1):
+                one_job = dict(args)
+                one_job["prompt"] = prompt.strip()
+                one_job["label"] = f"AXOM_VID · {seconds}s · render {index} of {count}"
+                try:
+                    queued = _json_response_from_upstream(
+                        self.server.phosphene_url, "/queue/add",
+                        body=urlencode(one_job).encode(),
+                        content_type="application/x-www-form-urlencoded",
+                    )
+                    job_id = queued.get("id")
+                    if (not queued.get("ok") or not isinstance(job_id, str)
+                            or not re.fullmatch(r"j-[a-zA-Z0-9-]{1,100}", job_id)):
+                        raise BridgeFailure("Phosphene did not return a valid job ID.")
+                except BridgeFailure as err:
+                    if not job_ids:
+                        raise
+                    warning = f"{len(job_ids)} of {count} renders queued. Remaining requests were not accepted: {err}"
+                    break
+                self.server.remember_job(job_id)
+                job_ids.append(job_id)
+            payload: dict[str, Any] = {
+                "jobId": job_ids[0],
+                "jobIds": job_ids,
+                "status": "queued",
+                "requested": count,
+                "accepted": len(job_ids),
+            }
+            if warning:
+                payload["warning"] = warning
+            self._json(payload)
         except BridgeFailure as err:
             self._fail(str(err), err.status)
         except (UnicodeError, ValueError) as err:
@@ -392,6 +474,89 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
             out["error"] = error[:400] if isinstance(error, str) else "Local render stopped."
         self._json(out)
 
+    def _handle_gif(self, query: dict[str, list[str]]) -> None:
+        job_id = query.get("jobId", [""])[0]
+        # Reject unregistered jobs before any file access or subprocess invocation.
+        self._known_job(job_id)
+        try:
+            seconds = int(query.get("seconds", ["10"])[0])
+            fps = int(query.get("fps", ["12"])[0])
+            width = int(query.get("width", ["480"])[0])
+        except (ValueError, IndexError):
+            raise BridgeFailure("Invalid GIF export options.", 400)
+        if seconds not in (3, 5, 10, 15) or fps not in (8, 12, 15) or width not in (320, 480, 640):
+            raise BridgeFailure("GIF duration, frame rate, or width is unsupported.", 400)
+        job = self._get_job(job_id)
+        if job is None or job.get("status") != "done":
+            raise BridgeFailure("Finish the video before exporting a GIF.", 409)
+        source = safe_video_path(job)
+        if source is None:
+            raise BridgeFailure("The video file is missing or is outside the owned output directory.", 404)
+
+        ffmpeg = os.environ.get("AXOM_FFMPEG") or shutil.which("ffmpeg")
+        if not ffmpeg or not os.access(ffmpeg, os.X_OK):
+            raise BridgeFailure(
+                "FFmpeg is required for GIF downloads. Put FFmpeg on the external SSD "
+                "and set AXOM_FFMPEG to its executable path before launching the studio.", 503
+            )
+        sig = hashlib.sha256(
+            f"{job_id}:{source.stat().st_mtime_ns}:{seconds}:{fps}:{width}".encode()
+        ).hexdigest()[:24]
+        cache_dir = self.server.state_file.parent / "gifs"
+        cache_path = cache_dir / (sig + ".gif")
+        with self.server.gif_lock:
+            if not cache_path.is_file():
+                try:
+                    cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+                except OSError as err:
+                    raise BridgeFailure("GIF cache is not writable. Check the SSD.", 507) from err
+                with tempfile.NamedTemporaryFile(
+                    dir=cache_dir, prefix=".gif-", suffix=".gif", delete=False,
+                ) as staging:
+                    temp_path = Path(staging.name)
+                try:
+                    filters = (
+                        f"fps={fps},scale={width}:-2:flags=lanczos,split[palettein][gifin];"
+                        "[palettein]palettegen=stats_mode=diff[palette];"
+                        "[gifin][palette]paletteuse=dither=bayer:bayer_scale=3"
+                    )
+                    result = subprocess.run(
+                        [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                         "-threads", "2", "-t", str(seconds), "-i", str(source),
+                         "-filter_complex", filters, "-loop", "0", "-an",
+                         "-f", "gif", str(temp_path)],
+                        capture_output=True, timeout=600, check=False,
+                    )
+                    if result.returncode != 0 or not temp_path.is_file() or temp_path.stat().st_size < 6:
+                        raise BridgeFailure(
+                            "FFmpeg could not convert this MP4 to GIF. Check the video and SSD space.", 502
+                        )
+                    with temp_path.open("rb") as gif:
+                        if gif.read(6) not in (b"GIF89a", b"GIF87a"):
+                            raise BridgeFailure("FFmpeg returned a file that was not a valid GIF.", 502)
+                    temp_path.replace(cache_path)
+                except subprocess.TimeoutExpired as err:
+                    raise BridgeFailure("GIF conversion exceeded ten minutes. Select a shorter GIF.", 504) from err
+                except OSError as err:
+                    raise BridgeFailure("Unable to write the GIF to the SSD.", 507) from err
+                finally:
+                    temp_path.unlink(missing_ok=True)
+
+        size = cache_path.stat().st_size
+        self.send_response(200)
+        self.send_header("Content-Type", "image/gif")
+        self.send_header("Content-Length", str(size))
+        self.send_header("Content-Disposition", f'attachment; filename="axom-{job_id[:24]}.gif"')
+        self.send_header("Cache-Control", "private, no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        with cache_path.open("rb") as gif:
+            while chunk := gif.read(256 * 1024):
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+
     def _handle_video(self, job_id: str, download: bool) -> None:
         job = self._get_job(job_id)
         if job is None or job.get("status") != "done":
@@ -400,21 +565,48 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
         if path is None:
             raise BridgeFailure("The generated MP4 cannot be found.", 404)
         size = path.stat().st_size
-        self.send_response(200)
+        first, last = 0, size - 1
+        partial = False
+        requested = self.headers.get("Range")
+        if requested:
+            match = re.fullmatch(r"bytes=(\d*)-(\d*)", requested)
+            if not match or not (match.group(1) or match.group(2)):
+                raise BridgeFailure("Unsupported byte range.", 416)
+            if match.group(1):
+                first = int(match.group(1))
+                last = int(match.group(2)) if match.group(2) else size - 1
+            else:
+                suffix = int(match.group(2))
+                if suffix <= 0:
+                    raise BridgeFailure("Invalid byte range.", 416)
+                first = max(0, size - suffix)
+            if first >= size or first > last:
+                raise BridgeFailure("Byte range is outside the video.", 416)
+            last = min(last, size - 1)
+            partial = True
+        self.send_response(206 if partial else 200)
         self.send_header("Content-Type", "video/mp4")
-        self.send_header("Content-Length", str(size))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(last - first + 1))
+        if partial:
+            self.send_header("Content-Range", f"bytes {first}-{last}/{size}")
         self.send_header("Cache-Control", "private, no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         if download:
             self.send_header("Content-Disposition", 'attachment; filename="axom-local.mp4"')
         self.end_headers()
         with path.open("rb") as source:
-            while chunk := source.read(256 * 1024):
+            source.seek(first)
+            remaining = last - first + 1
+            while remaining > 0:
+                chunk = source.read(min(256 * 1024, remaining))
+                if not chunk:
+                    break
                 try:
                     self.wfile.write(chunk)
                 except (BrokenPipeError, ConnectionResetError):
                     break
-
+                remaining -= len(chunk)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run AXOM_VID with no metered cloud GPU.")

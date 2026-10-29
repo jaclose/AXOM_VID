@@ -81,13 +81,26 @@ event to pull the video URL out of the return tuple. That file and
 
 1. Install [Pinokio](https://desktop.pinokio.co/) and choose an external SSD as Pinokio Home in Settings if internal space is limited.
 2. Install and start [Phosphene](https://github.com/mrbizarro/Phosphene) in Pinokio. Its panel runs at `http://127.0.0.1:8198`.
-3. In the separate AXOM_VID checkout, start the local frontend and bridge:
+3. From **any Terminal directory**, clone or refresh AXOM_VID on the SSD and start it (this does not alter an existing Phosphene installation):
 
 ```bash
-bash local/start.command
+SSD="/Volumes/JDabSSD"
+if ! test -d "$SSD"; then echo "External SSD is not mounted: $SSD"; else
+  mkdir -p "$SSD/Developer"
+  if test -d "$SSD/Developer/AXOM_VID/.git"; then
+    git -C "$SSD/Developer/AXOM_VID" switch main
+    git -C "$SSD/Developer/AXOM_VID" pull --ff-only
+  else
+    git clone https://github.com/jaclose/AXOM_VID.git "$SSD/Developer/AXOM_VID"
+  fi
+  cd "$SSD/Developer/AXOM_VID"
+  bash local/start.command
+fi
 ```
 
-4. Open **http://127.0.0.1:8765/AXOM_VID/** and select **Local Mac**. The local engine provides video generation without a daily count or paid service.
+4. Open **http://127.0.0.1:8765/AXOM_VID/**. Select **Local Mac** and generate 3–10-second clips or 30–120-second chained takes; optionally queue 1–6 generations. Completed clips offer MP4 and GIF downloads (GIF exports are capped at 15 seconds). The script prepares the small FFmpeg converter on the SSD when needed.
+
+Your earlier `git switch main`, `git pull` and `bash local/start.command` attempt failed because the current directory was `~`, not a Git repository. The localhost URL refuses connections until this launcher is actually running.
 
 This mode uses electricity, CPU/GPU time, memory, and local storage, and it may be slower and lower resolution than cloud NVIDIA hardware. It works only while the Mac and Phosphene are running. Read the [detailed installation and limitations](local/README.md) before attempting a model download. **The public website cannot supply a free unlimited cloud GPU.**
 

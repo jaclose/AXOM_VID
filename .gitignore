@@ -30,3 +30,11 @@ Thumbs.db
 *.log
 npm-debug.log*
 pnpm-debug.log*
+
+# Local-only cache/tooling generated when running from an external SSD
+.local-tools/
+.cache/
+.corepack/
+.npm-cache/
+.pnpm-store/
+.tmp/

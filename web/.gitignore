@@ -5,3 +5,6 @@ dist/
 .astro/
 .env
 .env.local
+
+# Local bridge state and generated GIF cache (never commit user job metadata)
+.axom-local-state/
