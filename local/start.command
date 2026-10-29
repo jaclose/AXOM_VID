@@ -89,6 +89,7 @@ run_pnpm build
 cd "$ROOT"
 
 echo ""
-echo "Opening http://127.0.0.1:8765/AXOM_VID/"
-echo "To stop the bridge, press Ctrl+C in this Terminal window."
+echo "Starting AXOM_VID on the first available local port from 8765 to 8775…"
+echo "The server will print and open its actual URL. It will not stop other applications."
+echo "To stop the AXOM_VID bridge, press Ctrl+C in this Terminal window."
 exec "$PYTHON" local/bridge.py --open
