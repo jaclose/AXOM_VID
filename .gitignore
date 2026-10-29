@@ -26,6 +26,9 @@ worker/dist/
 Thumbs.db
 .DS_Store
 
+# Local-only hardware acceptance receipts and synthetic MP4/GIF outputs
+local/reports/
+
 # Logs
 *.log
 npm-debug.log*

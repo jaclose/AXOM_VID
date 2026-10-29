@@ -104,6 +104,18 @@ Your earlier `git switch main`, `git pull` and `bash local/start.command` attemp
 
 This mode uses electricity, CPU/GPU time, memory, and local storage, and it may be slower and lower resolution than cloud NVIDIA hardware. It works only while the Mac and Phosphene are running. Read the [detailed installation and limitations](local/README.md) before attempting a model download. **The public website cannot supply a free unlimited cloud GPU.**
 
+## ComfyUI and Phosphene integration acceptance
+
+The Phosphene installation and ComfyUI/Glass Studio model libraries are managed separately on the external SSD. After the existing Phosphene download completes, run the local integration preflight without changing model files:
+
+    python3 /Volumes/JDabSSD/Developer/AXOM_VID/local/acceptance.py
+
+Its receipt is saved only on the SSD under local/reports/last-preflight.json. When it reports ready_to_render and no GPU job is active, the owning setup workflow can run a single real 3-second Quick test and validate the MP4/GIF:
+
+    python3 /Volumes/JDabSSD/Developer/AXOM_VID/local/acceptance.py --render --max-minutes 90
+
+See [the cross-conversation SSD handoff and acceptance criteria](local/COMFYUI_INTEGRATION_HANDOFF.md). A successful web request or downloaded model file alone is not proof that local inference works.
+
 ## Run locally
 
 You need Node 20+, [pnpm](https://pnpm.io/) 9+, and a clone of this repo. Both lockfiles are v9, which is what CI installs with. The local preview uses the deployed Worker by default, so you can start with the frontend alone:
