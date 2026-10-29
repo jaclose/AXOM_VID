@@ -98,7 +98,7 @@ if ! test -d "$SSD"; then echo "External SSD is not mounted: $SSD"; else
 fi
 ```
 
-4. Open **http://127.0.0.1:8765/AXOM_VID/**. Select **Local Mac** and generate 3–10-second clips or 30–120-second chained takes; optionally queue 1–6 generations. Completed clips offer MP4 and GIF downloads (GIF exports are capped at 15 seconds). The script prepares the small FFmpeg converter on the SSD when needed.
+4. Open the **actual URL printed by the launcher** (8765 by default, or 8766–8775 if the default is already in use). Select **Local Mac** and generate 3–10-second clips or 30–120-second chained takes; optionally queue 1–6 generations. Completed clips offer MP4 and GIF downloads (GIF exports are capped at 15 seconds). The script prepares the small FFmpeg converter on the SSD when needed.
 
 Your earlier `git switch main`, `git pull` and `bash local/start.command` attempt failed because the current directory was `~`, not a Git repository. The localhost URL refuses connections until this launcher is actually running.
 
