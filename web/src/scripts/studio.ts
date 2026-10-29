@@ -341,11 +341,12 @@ async function runGeneration(): Promise<void> {
       const message = state.cancelReason === "timeout"
         ? "No result arrived after eight minutes. The shared GPU may be stalled; try again later."
         : describeFailure(err, latestQuota);
-      errorTitle.textContent = "Generation stopped";
+      const allowanceUsed = latestQuota && quotaBlock(latestQuota);
+      errorTitle.textContent = allowanceUsed ? "Daily GPU limit reached" : "Generation stopped";
       errorDetail.textContent = message;
-      retryBtn.textContent = latestQuota && quotaBlock(latestQuota) ? "Check again" : "Try again";
+      retryBtn.textContent = allowanceUsed ? "Check again" : "Try again";
       showResultState("error");
-      setStatus("Generation stopped. See the result panel for details.", "error");
+      setStatus(allowanceUsed ? "Shared GPU allowance is used. See the reset time below." : "Generation stopped. See the result panel for details.", "error");
     }
   } finally {
     window.clearTimeout(timeout);
