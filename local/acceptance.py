@@ -312,8 +312,12 @@ def run_smoke_test(
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     """Opt-in end-to-end local GPU acceptance; never touches the installer."""
-    if not safe_loopback_url(studio + "/local/health") or max_wait_seconds <= 0:
-        raise ValueError("Expected a local studio and a positive time limit.")
+    parsed = urlsplit(studio)
+    if (not safe_loopback_url(studio + "/local/health")
+            or parsed.port not in AXOM_PORTS
+            or parsed.path not in ("", "/")
+            or max_wait_seconds <= 0):
+        raise ValueError("Expected a dedicated local AXOM_VID studio and a positive time limit.")
 
     report_dir.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {
@@ -360,7 +364,10 @@ def run_smoke_test(
         report["checks"]["mp4"] = {"passed": video_ok, "bytes": size, "detail": detail}
         if not video_ok:
             raise AcceptanceError(detail)
-        report["checks"]["mp4"]["sha256"] = hashlib.file_digest(mp4_path.open("rb"), "sha256").hexdigest()
+        with mp4_path.open("rb") as rendered_file:
+            report["checks"]["mp4"]["sha256"] = hashlib.file_digest(
+                rendered_file, "sha256"
+            ).hexdigest()
 
         gif_path = report_dir / "smoke-video.gif"
         gif_url = studio + "/local/gif?" + urlencode(
@@ -395,6 +402,14 @@ def run_preflight(
         {"state": "offline", "ready_to_test": False}
     )
     comfy = fetch("http://127.0.0.1:8188/system_stats")
+    gpu = phosphene["status"].get("gpu") if phosphene else None
+    gpu_busy = bool(
+        phosphene and (
+            phosphene["status"].get("current") is not None
+            or bool(phosphene["status"].get("queue"))
+            or (isinstance(gpu, dict) and gpu.get("busy") is True)
+        )
+    )
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "ssd_checkout": str(ROOT),
@@ -402,10 +417,11 @@ def run_preflight(
         "phosphene": {"url": phosphene["url"], "online": True} if phosphene else None,
         "model": model,
         "comfyui_http_responsive": isinstance(comfy, dict) and "system" in comfy,
+        "local_gpu_busy": gpu_busy,
         "axom_bridge_online": bool(axom and axom["health"].get("online") is True),
         "ready_to_render": bool(
             axom and axom["health"].get("online") is True
-            and phosphene and model["ready_to_test"]
+            and phosphene and model["ready_to_test"] and not gpu_busy
         ),
     }
 
@@ -438,6 +454,8 @@ def main() -> int:
         print("Phosphene uses DEV port 8199. Restart AXOM_VID with PHOSPHENE_URL=http://127.0.0.1:8199.", flush=True)
     if status["model"]["state"] in ("downloading", "blocked"):
         print("Phosphene model download is still active/blocked. Do not overwrite or remove .part files.", flush=True)
+    if status["local_gpu_busy"]:
+        print("Another GPU job is running or queued. This check will not start an acceptance render.", flush=True)
 
     if args.render:
         if not status["ready_to_render"]:
