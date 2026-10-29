@@ -30,6 +30,8 @@
  *     web/src/scripts/studio.ts is the other half of this file.
  */
 
+import { handleFal, privateConfigured } from "./fal.ts";
+
 // Worker env vars come from wrangler.toml [vars]. Marked `readonly` since
 // they're injected at deploy time, not mutated at runtime.
 export interface Env {
@@ -37,6 +39,8 @@ export interface Env {
   readonly HF_SPACE_BASE: string;
   readonly HF_FN_NAME: string;
   readonly HF_TOKEN?: string;
+  readonly FAL_KEY?: string;
+  readonly PRIVATE_ACCESS_KEY?: string;
   readonly GENERATION_RATE_LIMIT?: {
     limit(input: { key: string }): Promise<{ success: boolean }>;
   };
@@ -68,6 +72,17 @@ export default {
     // three "simple" ones triggers a preflight, so we MUST answer this.
     if (req.method === "OPTIONS") {
       return withCors(new Response(null, { status: 204 }), origin, env);
+    }
+
+    if (url.pathname.startsWith("/fal/")) {
+      if (origin && !isAllowedOrigin(origin, env)) {
+        return withCors(jsonResponse({ error: "This site is not allowed to use the private renderer." }, 403), origin, env);
+      }
+      try {
+        return withCors(await handleFal(req, env), origin, env);
+      } catch {
+        return withCors(jsonResponse({ error: "Private provider could not complete the request." }, 502), origin, env);
+      }
     }
 
     if (req.method === "POST" && url.pathname === "/generate") {
@@ -122,7 +137,7 @@ export default {
     }
 
     if (req.method === "GET" && url.pathname === "/health") {
-      return withCors(jsonResponse({ ok: true, configured: Boolean(env.HF_TOKEN?.trim()) }), origin, env);
+      return withCors(jsonResponse({ ok: true, configured: Boolean(env.HF_TOKEN?.trim()), privateConfigured: privateConfigured(env) }), origin, env);
     }
 
     if (req.method === "GET" && url.pathname === "/quota") {
@@ -477,7 +492,7 @@ function withCors(res: Response, origin: string, env: Env): Response {
     headers.set("Vary", "Origin");
   }
   headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  headers.set("Access-Control-Allow-Headers", "Content-Type");
+  headers.set("Access-Control-Allow-Headers", "Content-Type, X-AXOM-Access-Key");
   headers.set("Access-Control-Expose-Headers", "X-HF-Space-Base");
   headers.set("Access-Control-Max-Age", "86400");
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
