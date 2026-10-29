@@ -138,7 +138,7 @@ async function refreshQuota(): Promise<GpuQuota | null> {
     }
     return quota;
   } catch {
-    if (requestId === quotaRequestId) {
+    if (requestId === quotaRequestId && serviceSelect.value === "shared") {
       quotaEl.dataset.state = "unknown";
       quotaEl.textContent = "Shared GPU allowance is unavailable. You can still try generating.";
     }
@@ -256,11 +256,13 @@ async function checkPrivateProvider(): Promise<void> {
     const response = await fetch(WORKER_URL + "/health", { signal: AbortSignal.timeout(6000) });
     if (!response.ok) throw new Error("Service health unavailable");
     const data = await response.json() as { privateConfigured?: unknown };
+    if (serviceSelect.value !== "private") return;
     privateAvailable = data.privateConfigured === true;
     serviceHelp.textContent = privateAvailable
       ? "Private GPU configured. Requires your access code; each submitted video is billable."
       : "Private GPU is not enabled. The owner must configure FAL_KEY and PRIVATE_ACCESS_KEY in Cloudflare first.";
   } catch {
+    if (serviceSelect.value !== "private") return;
     serviceHelp.textContent = "Could not check the private GPU configuration. Try selecting the mode again.";
   }
   refreshGenerateButton();
@@ -447,6 +449,28 @@ async function pollDelay(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+async function preparePrivateImage(file: File): Promise<File> {
+  // Smaller image payloads save Worker CPU and avoid multi-megabyte base64
+  // uploads. Preserve aspect ratio, never upscale, and keep originals local.
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, 1024 / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext("2d");
+    if (!context) { bitmap.close(); return file; }
+    context.fillStyle = "#fff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
+    return blob ? new File([blob], "axom-input.jpg", { type: "image/jpeg" }) : file;
+  } catch {
+    return file;
+  }
+}
+
 async function runPrivateGeneration(): Promise<void> {
   if (!state.file || state.busy || !promptEl.value.trim() || !privateAvailable || !privateKeyEl.value.trim()) return;
 
@@ -467,7 +491,7 @@ async function runPrivateGeneration(): Promise<void> {
 
   try {
     const form = new FormData();
-    form.append("image", state.file);
+    form.append("image", await preparePrivateImage(state.file));
     form.append("params", JSON.stringify({
       prompt: promptEl.value.trim(),
       duration_seconds: Number(durationEl.value),
