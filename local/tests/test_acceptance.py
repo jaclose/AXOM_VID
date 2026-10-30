@@ -153,6 +153,27 @@ class AcceptanceTests(unittest.TestCase):
         self.assertTrue(status["local_gpu_busy"])
         self.assertFalse(status["ready_to_render"])
 
+    def test_preflight_detects_active_comfyui_on_alternate_port_8189(self):
+        def fetch(url):
+            if url.endswith(":8765/local/health"):
+                return {"online": True, "provider": "Phosphene LTX local"}
+            if url.endswith(":8198/status"):
+                return {"running": False, "current": None, "queue": [],
+                        "gpu": {"busy": False},
+                        "deferred_downloads": {"active": False, "state": "done"}}
+            if url.endswith(":8198/oneshot/options"):
+                return {"engines": {"ltx": {"available": True}}}
+            if url.endswith(":8189/system_stats"):
+                return {"system": {"os": "darwin"}}
+            if url.endswith(":8189/queue"):
+                return {"queue_running": [["active_wan_render"]], "queue_pending": []}
+            return None
+        status = run_preflight(fetch)
+        self.assertTrue(status["comfyui_http_responsive"])
+        self.assertEqual(status["comfyui_url"], "http://127.0.0.1:8189")
+        self.assertTrue(status["comfyui_gpu_busy"])
+        self.assertFalse(status["ready_to_render"])
+
     def test_preflight_can_accept_idle_model_without_other_jobs(self):
         def fetch(url):
             if url.endswith(":8765/local/health"):
