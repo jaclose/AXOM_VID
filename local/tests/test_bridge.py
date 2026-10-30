@@ -33,6 +33,7 @@ class MockPhosphene(BaseHTTPRequestHandler):
     submission_count = 0
     seen_submissions = []
     job_ids = []
+    download_state = {"active": False, "state": "done", "pending": []}
 
     def log_message(self, *args):
         pass
@@ -66,6 +67,13 @@ class MockPhosphene(BaseHTTPRequestHandler):
         if self.path == "/status":
             self._json({
                 "running": False,
+                "base_available": True,
+                "model_integrity": {"ok": True, "bad": [], "checked": 26},
+                "tier": {"key": "base", "ram_gb": 18, "i2v_max_dim": 768,
+                         "allows_q8": False, "allows_keyframe": False},
+                "memory": {"total_gb": 18.0, "pressure_pct": 72, "swap_gb": 4.2},
+                "deferred_downloads": MockPhosphene.download_state,
+                "gpu": {"busy": False, "holder": None},
                 "current": None,
                 "queue": [],
                 "history": [{"id": job_id, "status": "done",
@@ -122,11 +130,11 @@ class LocalBridgeTests(unittest.TestCase):
         ))
 
     def _form(self, image=PNG, prompt="A golden retriever runs through wildflowers", duration=3,
-              orientation="landscape", batch=1, variants=None):
+              orientation="landscape", batch=1, variants=None, **extras):
         boundary = "AXOMBOUNDARY123"
         settings = json.dumps({"prompt": prompt, "duration_seconds": duration,
                                "orientation": orientation, "batch_count": batch,
-                               "prompts": variants}).encode()
+                               "prompts": variants, **extras}).encode()
         parts = [
             b"--" + boundary.encode() + b"\r\n"
             b'Content-Disposition: form-data; name="image"; filename="frame.png"\r\n'
@@ -276,6 +284,74 @@ class LocalBridgeTests(unittest.TestCase):
             self._post("/local/generate", body, ctype)
         self.assertEqual(raised.exception.code, 400)
 
+
+    def test_health_report_distinguishes_online_panel_from_incomplete_text_encoder(self):
+        unfinished = {
+            "active": True, "state": "downloading", "key": "gemma",
+            "pending": [{"key": "gemma", "name": "Gemma text encoder", "left_gb": 3.4}],
+        }
+        with patch.object(MockPhosphene, "download_state", unfinished):
+            status, body, _ = self._get("/local/health")
+        self.assertEqual(status, 200)
+        health = json.loads(body)
+        self.assertTrue(health["online"])
+        self.assertTrue(health["baseAvailable"])
+        self.assertFalse(health["readyToGenerate"])
+        self.assertEqual(health["tier"], "base")
+        self.assertEqual(health["memory"]["totalGB"], 18.0)
+        self.assertEqual(health["download"]["pending"][0]["name"], "Gemma text encoder")
+        self.assertNotIn("model_path", health)
+        self.assertNotIn("HF_TOKEN", body.decode())
+
+    def test_health_report_marks_idle_q4_compatible_panel_ready(self):
+        with patch.object(MockPhosphene, "download_state",
+                          {"state": "done", "active": False, "pending": []}):
+            status, body, _ = self._get("/local/health")
+        self.assertEqual(status, 200)
+        health = json.loads(body)
+        self.assertTrue(health["readyToGenerate"])
+        self.assertEqual(health["resolutionMax"], 768)
+
+    def test_incomplete_core_text_encoder_prevents_upload_and_job_submissions(self):
+        unfinished = {"active": True, "state": "downloading", "key": "gemma",
+                      "pending": [{"key": "gemma", "left_gb": 2.0}]}
+        before = MockPhosphene.submission_count
+        body, content_type = self._form()
+        with patch.object(MockPhosphene, "download_state", unfinished):
+            with self.assertRaises(HTTPError) as response:
+                self._post("/local/generate", body, content_type)
+        self.assertEqual(response.exception.code, 503)
+        self.assertEqual(MockPhosphene.submission_count, before)
+
+    def test_personalization_settings_are_mapped_and_bounded(self):
+        body, content_type = self._form(
+            duration=30, orientation="portrait", quality="balanced",
+            resolution="640", seed=42, camera="pan_right",
+            intensity="subtle", look="cinematic",
+        )
+        with self._post("/local/generate", body, content_type) as response:
+            self.assertEqual(response.status, 200)
+        params = MockPhosphene.seen_params
+        self.assertEqual(params["width"], ["352"])
+        self.assertEqual(params["height"], ["640"])
+        self.assertEqual(params["seed"], ["42"])
+        self.assertEqual(params["take_seconds"], ["30"])
+        self.assertEqual(params["quality"], ["balanced"])
+        self.assertIn("pan", params["prompt"][0].lower())
+        self.assertIn("cinematic", params["prompt"][0].lower())
+        self.assertIn("take_camera", params)
+
+    def test_personalization_rejects_oversized_resolution_and_invalid_seed(self):
+        for extras in ({"resolution": "1024"}, {"seed": "bad"},
+                       {"camera": "arbitrary-code"}, {"intensity": "ultra"},
+                       {"look": "invalid"}):
+            with self.subTest(extras=extras):
+                before = MockPhosphene.submission_count
+                body, ctype = self._form(**extras)
+                with self.assertRaises(HTTPError) as response:
+                    self._post("/local/generate", body, ctype)
+                self.assertEqual(response.exception.code, 400)
+                self.assertEqual(MockPhosphene.submission_count, before)
 
     def test_seven_and_ten_second_clips_submit_valid_frame_counts(self):
         for duration, frames in ((7, "169"), (10, "241")):
