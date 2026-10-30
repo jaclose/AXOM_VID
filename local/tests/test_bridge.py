@@ -341,6 +341,23 @@ class LocalBridgeTests(unittest.TestCase):
         self.assertIn("cinematic", params["prompt"][0].lower())
         self.assertIn("take_camera", params)
 
+    def test_long_take_supports_timed_storyboard_beats(self):
+        beats = "Establish the landscape\nReveal the mountain\nA gentle sunrise"
+        body, ctype = self._form(duration=30, camera="push_in", beats=beats)
+        with self._post("/local/generate", body, ctype) as response:
+            self.assertEqual(response.status, 200)
+        self.assertEqual(MockPhosphene.seen_params["beats"], [beats])
+        self.assertEqual(MockPhosphene.seen_params["take_seconds"], ["30"])
+
+    def test_storyboard_beats_rejected_for_short_clips_or_too_many_beats(self):
+        for duration, beats in ((3, "Establish the shot"),
+                                (30, "\n".join(["beat"] * 7))):
+            with self.subTest(duration=duration):
+                body, ctype = self._form(duration=duration, beats=beats)
+                with self.assertRaises(HTTPError) as failed:
+                    self._post("/local/generate", body, ctype)
+                self.assertEqual(failed.exception.code, 400)
+
     def test_personalization_rejects_oversized_resolution_and_invalid_seed(self):
         for extras in ({"resolution": "1024"}, {"seed": "bad"},
                        {"camera": "arbitrary-code"}, {"intensity": "ultra"},
