@@ -74,6 +74,9 @@ const modelDownloads = $<HTMLParagraphElement>("[data-model-downloads]");
 const localBatch = $<HTMLSelectElement>("[data-local-batch]");
 const localQuality = $<HTMLSelectElement>("[data-local-quality]");
 const localVariations = $<HTMLTextAreaElement>("[data-local-variations]");
+const localBeatsWrap = $<HTMLDivElement>("[data-local-beats-wrap]");
+const localBeats = $<HTMLTextAreaElement>("[data-local-beats]");
+const localBeatsHint = $<HTMLParagraphElement>("[data-local-beats-hint]");
 const localHint = $<HTMLParagraphElement>("[data-local-hint]");
 const localQueueWrap = $<HTMLDivElement>("[data-local-queue]");
 const localJobList = $<HTMLUListElement>("[data-local-job-list]");
@@ -354,6 +357,10 @@ function updateLocalHints(): void {
   const duration = Number(localDuration.value);
   const size = Number(localResolution.value);
   const notes = [];
+  localBeatsWrap.classList.toggle("hidden", duration < 30);
+  localBeatsHint.textContent = duration >= 30
+    ? "Optional: up to " + (duration / 5) + " scene beats, one per five seconds. Blank lines hold the prior moment."
+    : "Storyboard beats require a 30-second or longer chained take.";
   if (duration >= 30) notes.push("Long takes chain 10-second parts and may take hours.");
   if (duration >= 10) notes.push("Longer clips use more memory.");
   if (size >= 640) notes.push("Higher resolution is experimental on 18 GB of RAM.");
@@ -877,6 +884,12 @@ async function downloadLocalGif(jobId: string): Promise<void> {
 async function runLocalGeneration(): Promise<void> {
   if (!LOCAL_STUDIO || !localEngineReady || !state.file || state.busy || !promptEl.value.trim()) return;
   const batch = Number(localBatch.value);
+  const duration = Number(localDuration.value);
+  if (duration >= 30 && localBeats.value
+      && localBeats.value.split(/\r?\n/).length > duration / 5) {
+    setStatus("This take allows at most " + (duration / 5) + " five-second storyboard beats.", "error");
+    return;
+  }
   const variants = localVariations.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   if (variants.length > 0 && variants.length !== batch) {
     setStatus("Provide exactly " + batch + " prompt variation(s), or leave variations empty.", "error");
@@ -923,6 +936,7 @@ async function runLocalGeneration(): Promise<void> {
       intensity: localIntensity.value,
       look: localLook.value,
       seed: fixedSeed,
+      beats: duration >= 30 ? localBeats.value : null,
     }));
     const res = await fetch("/local/generate", {
       method: "POST", body: form, signal: controller.signal,
