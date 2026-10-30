@@ -39,6 +39,7 @@ MAX_BATCH = 6
 DEFAULT_PHOSPHENE_URL = "http://127.0.0.1:8198"
 RESOLUTION_SIZES = {"512": (512, 288), "640": (640, 352), "704": (704, 384)}
 CAMERA_MOVES = {
+    "auto": ("", ""),
     "steady": ("steady, locked-off camera", "a steady locked-off camera"),
     "push_in": ("slow cinematic dolly push-in", "a smooth continuous dolly push forward"),
     "pull_back": ("slow dolly pull-back", "a steady pull-back at one speed"),
@@ -129,14 +130,15 @@ def summarize_panel_status(state: dict[str, Any]) -> dict[str, Any]:
 
 def composed_prompt(prompt: str, settings: dict[str, Any]) -> str:
     extras = [
-        CAMERA_MOVES[settings.get("camera", "steady")][0],
+        CAMERA_MOVES[settings.get("camera", "auto")][0],
         MOTION_LEVELS[settings.get("intensity", "natural")],
         VISUAL_LOOKS[settings.get("look", "original")],
     ]
     # Keep source prompt unchanged and explicit, append grounded controllable
     # motion cues; the prompt encoder, not a separate imaginary slider,
     # interprets these text instructions.
-    result = prompt.strip() + ". " + ". ".join(extras) + "."
+    extras = [item for item in extras if item]
+    result = prompt.strip() + (". " + ". ".join(extras) if extras else "") + "."
     if len(result) > MAX_PROMPT:
         raise BridgeFailure("Shorten the prompt to make room for creative direction.", 400)
     return result
@@ -254,7 +256,7 @@ def parse_form(data: bytes, content_type: str) -> tuple[bytes, str, dict[str, An
     for name, allowed in (("camera", CAMERA_MOVES),
                           ("intensity", MOTION_LEVELS), ("look", VISUAL_LOOKS)):
         value = settings.get(name, {
-            "camera": "steady", "intensity": "natural", "look": "original",
+            "camera": "auto", "intensity": "natural", "look": "original",
         }[name])
         if not isinstance(value, str) or value not in allowed:
             raise BridgeFailure(f"Unsupported {name} option.", 400)
@@ -533,9 +535,11 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
             }
             if seconds in LONG_TAKES:
                 args["take_seconds"] = str(seconds)
-                args["take_camera"] = CAMERA_MOVES[settings.get("camera", "steady")][1]
+                camera = CAMERA_MOVES[settings.get("camera", "auto")][1]
+                if camera:
+                    args["take_camera"] = camera
                 if isinstance(settings.get("beats"), str) and settings["beats"].strip():
-                    args["beats"] = settings["beats"].strip()
+                    args["beats"] = settings["beats"].replace("\r\n", "\n")
 
             job_ids: list[str] = []
             warning: str | None = None
