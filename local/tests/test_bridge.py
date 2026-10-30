@@ -349,6 +349,15 @@ class LocalBridgeTests(unittest.TestCase):
         self.assertEqual(MockPhosphene.seen_params["beats"], [beats])
         self.assertEqual(MockPhosphene.seen_params["take_seconds"], ["30"])
 
+    def test_default_camera_does_not_override_explicit_motion_prompt(self):
+        prompt = "The camera smoothly orbits the mountain at sunrise"
+        body, ctype = self._form(prompt=prompt)
+        with self._post("/local/generate", body, ctype) as res:
+            self.assertEqual(res.status, 200)
+        generated_prompt = MockPhosphene.seen_params["prompt"][0]
+        self.assertIn("orbits", generated_prompt)
+        self.assertNotIn("locked-off", generated_prompt)
+
     def test_storyboard_beats_rejected_for_short_clips_or_too_many_beats(self):
         for duration, beats in ((3, "Establish the shot"),
                                 (30, "\n".join(["beat"] * 7))):
