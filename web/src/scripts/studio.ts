@@ -341,7 +341,7 @@ function restoreLocalPreferences(): void {
       }
     }
     if (typeof preferences.seed === "string"
-        && /^-?\\d{1,10}$/.test(preferences.seed)) {
+        && /^-?\d{1,10}$/.test(preferences.seed)) {
       const seed = Number(preferences.seed);
       if (Number.isInteger(seed) && seed >= -1 && seed <= 2147483640) localSeed.value = String(seed);
     }
