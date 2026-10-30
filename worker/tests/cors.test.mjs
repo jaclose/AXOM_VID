@@ -23,7 +23,7 @@ function preflight(origin) {
 test("local AXOM_VID browsers on the known port range can complete CORS preflight", async () => {
   for (const port of [8765, 8766, 8767, 8770, 8775]) {
     for (const host of ["127.0.0.1", "localhost"]) {
-      const origin = `http://\${host}:\${port}`;
+      const origin = `http://${host}:${port}`;
       const res = await preflight(origin);
       assert.equal(res.status, 204);
       assert.equal(res.headers.get("Access-Control-Allow-Origin"), origin);
