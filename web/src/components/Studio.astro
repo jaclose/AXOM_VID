@@ -85,7 +85,10 @@ const assetBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
           Check local engine
         </button>
         <div data-model-diagnostics class="hidden rounded-xl border border-white/10 p-3 space-y-1" role="status" aria-live="polite">
-          <p class="field-label">Installed model and hardware</p>
+          <div class="flex flex-wrap justify-between items-center gap-2">
+            <p class="field-label">Installed model and hardware</p>
+            <button type="button" data-safe-preset class="btn-ghost text-xs">Use low-memory preset</button>
+          </div>
           <p class="field-hint" data-model-status>Checking...</p>
           <p class="field-hint" data-model-memory></p>
           <p class="field-hint" data-model-downloads></p>
