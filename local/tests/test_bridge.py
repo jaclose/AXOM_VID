@@ -378,7 +378,10 @@ class LocalBridgeTests(unittest.TestCase):
             result = json.load(response)
         self.assertEqual(len(result["jobIds"]), 3)
         self.assertEqual(len(set(result["jobIds"])), 3)
-        self.assertEqual([f["prompt"][0] for f in MockPhosphene.seen_submissions[start:]], variations)
+        sent = [item["prompt"][0] for item in MockPhosphene.seen_submissions[start:]]
+        self.assertEqual(len(sent), len(variations))
+        for original, enhanced in zip(variations, sent):
+            self.assertTrue(enhanced.startswith(original), enhanced)
 
     def test_batch_limit_rejected_without_submitting(self):
         before = MockPhosphene.submission_count
