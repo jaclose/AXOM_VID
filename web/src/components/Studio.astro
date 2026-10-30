@@ -84,6 +84,12 @@ const assetBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
         <button data-local-check type="button" class="btn-ghost hidden text-xs">
           Check local engine
         </button>
+        <div data-model-diagnostics class="hidden rounded-xl border border-white/10 p-3 space-y-1" role="status" aria-live="polite">
+          <p class="field-label">Installed model and hardware</p>
+          <p class="field-hint" data-model-status>Checking...</p>
+          <p class="field-hint" data-model-memory></p>
+          <p class="field-hint" data-model-downloads></p>
+        </div>
       </div>
 
       <details class="advanced-panel">
@@ -143,6 +149,19 @@ const assetBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
       </details>
 
       <div data-local-settings class="hidden space-y-4 rounded-xl border border-white/10 p-4">
+        <div>
+          <label for="local-recipe" class="field-label block mb-2">Creative recipe</label>
+          <select id="local-recipe" data-local-recipe class="prompt-input w-full px-3 py-2">
+            <option value="natural">Natural movement · recommended</option>
+            <option value="cinematic">Cinematic camera</option>
+            <option value="landscape">Landscape documentary</option>
+            <option value="product">Product showcase</option>
+            <option value="illustrated">Illustrated animation</option>
+            <option value="dynamic">Dynamic action</option>
+            <option value="custom">Custom settings</option>
+          </select>
+          <p class="field-hint mt-1">A recipe adjusts creative direction without replacing your motion prompt.</p>
+        </div>
         <div class="grid gap-4 sm:grid-cols-2">
           <div>
             <label for="local-batch" class="field-label block mb-2">Number of generations</label>
@@ -163,6 +182,69 @@ const assetBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
             </select>
           </div>
         </div>
+        <details class="advanced-panel" data-creative-panel>
+          <summary class="advanced-summary cursor-pointer select-none px-3 py-3">Customize camera, motion, format and seed</summary>
+          <div class="px-3 pb-4 grid gap-3 sm:grid-cols-2">
+            <div>
+              <label class="field-label block mb-2" for="local-camera">Camera movement</label>
+              <select id="local-camera" data-local-camera class="prompt-input w-full px-3 py-2">
+                <option value="steady">Steady / fixed</option>
+                <option value="push_in">Push in</option>
+                <option value="pull_back">Pull back</option>
+                <option value="pan_left">Pan left</option>
+                <option value="pan_right">Pan right</option>
+                <option value="orbit">Orbit</option>
+                <option value="tracking">Tracking shot</option>
+                <option value="tilt_up">Tilt up</option>
+              </select>
+            </div>
+            <div>
+              <label class="field-label block mb-2" for="local-intensity">Motion intensity</label>
+              <select id="local-intensity" data-local-intensity class="prompt-input w-full px-3 py-2">
+                <option value="subtle">Subtle</option>
+                <option value="natural" selected>Natural</option>
+                <option value="dynamic">Dynamic</option>
+              </select>
+            </div>
+            <div>
+              <label class="field-label block mb-2" for="local-look">Visual style</label>
+              <select id="local-look" data-local-look class="prompt-input w-full px-3 py-2">
+                <option value="original">Preserve source</option>
+                <option value="cinematic">Cinematic</option>
+                <option value="documentary">Documentary</option>
+                <option value="illustrated">Illustrated</option>
+                <option value="product">Product showcase</option>
+              </select>
+            </div>
+            <div>
+              <label class="field-label block mb-2" for="local-orientation">Video orientation</label>
+              <select id="local-orientation" data-local-orientation class="prompt-input w-full px-3 py-2">
+                <option value="auto">Match source image</option>
+                <option value="landscape">Landscape</option>
+                <option value="portrait">Portrait</option>
+              </select>
+            </div>
+            <div>
+              <label class="field-label block mb-2" for="local-resolution">Resolution</label>
+              <select id="local-resolution" data-local-resolution class="prompt-input w-full px-3 py-2">
+                <option value="512">512 × 288 · safer</option>
+                <option value="640">640 × 352 · experimental</option>
+                <option value="704">704 × 384 · compact maximum, experimental</option>
+              </select>
+            </div>
+            <div>
+              <label class="field-label block mb-2" for="local-seed">Random seed</label>
+              <input id="local-seed" data-local-seed type="number" min="-1" max="2147483640"
+                step="1" value="-1" inputmode="numeric"
+                class="prompt-input w-full px-3 py-2" aria-describedby="seed-help"/>
+            </div>
+            <p id="seed-help" class="field-hint sm:col-span-2">
+              -1 generates a random variation. A fixed seed makes matching settings reproducible.
+              For multiple generations, each copy increments the seed.
+              Larger resolution may exhaust your Mac's 18 GB of memory.
+            </p>
+          </div>
+        </details>
         <div>
           <label for="local-variations" class="field-label block mb-2">Optional prompt variations</label>
           <textarea id="local-variations" rows="3" data-local-variations
