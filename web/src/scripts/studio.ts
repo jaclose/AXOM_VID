@@ -451,36 +451,95 @@ function applyEngineMode(): void {
   refreshGenerateButton();
 }
 
+interface LocalHealth {
+  online?: boolean;
+  readyToGenerate?: boolean;
+  baseAvailable?: boolean;
+  modelIntegrityOK?: boolean;
+  tier?: string;
+  resolutionMax?: number;
+  busy?: boolean;
+  queued?: number;
+  error?: string;
+  memory?: { totalGB?: number; pressurePercent?: number; swapGB?: number };
+  download?: {
+    active?: boolean;
+    state?: string;
+    gemmaPending?: boolean;
+    pending?: Array<{ name?: string; key?: string; leftGB?: number }>;
+  };
+}
+
 async function checkLocalEngine(): Promise<void> {
   if (!LOCAL_STUDIO || engineEl.value !== "local") return;
   const reqId = ++localCheckId;
   localEngineReady = false;
-  engineHelp.textContent = "Checking Phosphene on http://127.0.0.1:8198…";
+  engineHelp.textContent = "Checking Phosphene model, memory and pending downloads…";
   quotaEl.dataset.state = "unknown";
-  quotaEl.textContent = "Local GPU · unlimited attempts · no provider charges";
+  quotaEl.textContent = "Checking local video engine · no provider fees";
   refreshGenerateButton();
+
   try {
     const res = await fetch("/local/health", { signal: AbortSignal.timeout(8000) });
     if (!res.ok) throw new Error(await readErrorMessage(res));
     const data: unknown = await res.json();
     if (!data || typeof data !== "object") throw new Error("Invalid local engine response.");
     if (reqId !== localCheckId || engineEl.value !== "local") return;
-    const value = data as { online?: boolean; error?: string; busy?: boolean; queued?: number };
-    localEngineReady = value.online === true;
-    if (localEngineReady) void pollLocalJobs();
-    engineHelp.textContent = localEngineReady
-      ? "Phosphene connected. Your image stays on this Mac. Local model output may take several minutes."
-      : value.error || "Start Phosphene in Pinokio, then click Check local engine.";
+    const value = data as LocalHealth;
+    const online = value.online === true;
+    localEngineReady = online && value.readyToGenerate === true;
+
+    if (online) void pollLocalJobs();
+
+    if (!online) {
+      engineHelp.textContent = value.error || "Phosphene is offline. Start it in Pinokio, then check again.";
+    } else if (localEngineReady) {
+      engineHelp.textContent = "Phosphene Q4 ready. Jobs run on this Mac without daily account quotas.";
+    } else if (value.download?.gemmaPending) {
+      engineHelp.textContent = "Phosphene is online, but Gemma text encoder is still downloading. Let it finish.";
+    } else {
+      engineHelp.textContent = "Phosphene is online, but the video model has not passed its readiness checks.";
+    }
+
     quotaEl.dataset.state = localEngineReady ? "ready" : "empty";
     quotaEl.textContent = localEngineReady
-      ? "Local GPU ready · no daily limit · " + (value.busy ? "GPU busy" : "GPU idle") +
-        (typeof value.queued === "number" ? " · " + value.queued + " queued" : "")
-      : "Local renderer offline. Start Phosphene to generate without provider quotas.";
+      ? "Local engine ready · " + (value.busy ? "GPU busy" : "GPU idle")
+        + (typeof value.queued === "number" ? " · " + value.queued + " queued" : "")
+      : online
+        ? "Local model not ready. Do not resubmit until required downloads finish."
+        : "Local renderer offline. Shared cloud mode is separate and quota-limited.";
+
+    modelStatus.textContent = !online ? "Phosphene panel offline."
+      : "Q4 base: " + (value.baseAvailable ? "installed" : "unavailable")
+      + " · Integrity: " + (value.modelIntegrityOK ? "verified" : "unverified")
+      + " · Tier: " + (value.tier || "unknown") + " · Maximum supported dimension: "
+      + (value.resolutionMax || "?") + "px.";
+    const memory = value.memory;
+    if (memory) {
+      const memoryValues = [];
+      if (typeof memory.totalGB === "number") memoryValues.push(memory.totalGB + " GB unified RAM");
+      if (typeof memory.pressurePercent === "number") memoryValues.push(memory.pressurePercent + "% memory pressure");
+      if (typeof memory.swapGB === "number") memoryValues.push(memory.swapGB.toFixed(1) + " GB swap used");
+      modelMemory.textContent = memoryValues.join(" · ")
+        + ((memory.pressurePercent || 0) >= 75 || (memory.swapGB || 0) >= 8
+          ? ". High memory load: Quick / 512px is recommended." : "");
+    } else modelMemory.textContent = "";
+    const pending = value.download?.pending || [];
+    if (pending.length) {
+      modelDownloads.textContent = "Pending: " + pending.slice(0, 3)
+        .map((item) => item.name || item.key || "model").join("; ")
+        + (pending.length > 3 ? "; and " + (pending.length - 3) + " more" : "");
+    } else {
+      modelDownloads.textContent = online ? "No pending model downloads reported." : "";
+    }
   } catch {
     if (reqId !== localCheckId || engineEl.value !== "local") return;
-    engineHelp.textContent = "Cannot reach the local bridge. Run local/start.command in AXOM_VID.";
+    engineHelp.textContent = "Cannot reach the local video bridge. Start AXOM_VID from its SSD launcher.";
     quotaEl.dataset.state = "empty";
-    quotaEl.textContent = "Local connection unavailable.";
+    quotaEl.textContent = "Local bridge unavailable.";
+    modelStatus.textContent = "No local model status available.";
+    modelMemory.textContent = "";
+    modelDownloads.textContent = "";
   }
   refreshGenerateButton();
 }
