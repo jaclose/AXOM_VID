@@ -82,12 +82,19 @@ if ! curl -sf --max-time 2 http://127.0.0.1:8198/status >/dev/null 2>&1; then
 fi
 
 cd "$ROOT/web"
-if ! test -d node_modules; then
-  echo "First-run frontend dependencies missing; installing only website packages."
-  run_pnpm install --frozen-lockfile --store-dir "$ROOT/.pnpm-store"
+if ! test -x "$ROOT/web/node_modules/.bin/astro"; then
+  echo "Astro frontend dependencies are missing; installing packages on the SSD."
+  CI=true run_pnpm install --frozen-lockfile --store-dir "$ROOT/.pnpm-store"
 fi
-echo "Building AXOM_VID website…"
-run_pnpm build
+if ! test -x "$ROOT/web/node_modules/.bin/astro"; then
+  echo "ERROR: Astro was not installed successfully. Check the SSD and Node version."
+  exit 1
+fi
+echo "Building AXOM_VID using its installed Astro executable…"
+# Invoking pnpm 11 against modules originally installed by pnpm 9 triggers
+# an unsolicited node_modules purge and fails in noninteractive Terminals.
+# The checked-in Astro binary avoids that destructive package-manager check.
+"$ROOT/web/node_modules/.bin/astro" build
 cd "$ROOT"
 
 echo ""
