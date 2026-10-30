@@ -132,6 +132,14 @@ The [October 30 Mac model and capability audit](local/MODEL_AUDIT_2026-10-30.md)
 
 **Maximal settings warning:** The separate free cloud backend's 4.5-second/12-step synthetic test returned an upstream `event: error` with `data: null`; 1.5-second/3-step generation succeeded. Local LTX High/Q8 and Hailuo H3 are unsupported by the current machine's Phosphene capability tier. Longer and larger options are not automatically reliable or free of hardware limits.
 
+## M3 Pro / 18 GB safe generation
+
+The Mac's Phosphene panel may be online even when its GPU is **not safe to submit to**. After a recent Metal watchdog timeout while encoding prompts, AXOM_VID now checks the actual Phosphene job history for a 15-minute cooldown, its active download and GPU queue, ComfyUI's active queue, and Mac memory pressure before accepting new local video work.
+
+The first verified local image-to-video job is deliberately limited to **one 3-second Quick 512px clip**. Longer takes, higher quality/resolution, or multiple queued variations are unlocked gradually only after a successful I2V and when resources permit. This does not affect the separate, quota-limited shared-cloud mode or delete any installed models. When a request is unsafe, the interface displays the specific reason instead of silently retrying.
+
+See the [M3 Pro GPU recovery and low-memory workflow](local/M3_PRO_RECOVERY.md). Phosphene's optional Q8 model does not become runnable merely because its 30 GB weights are downloaded; the installed Compact tier reports `allows_q8: false` for this Mac.
+
 ## Run locally
 
 You need Node 20+, [pnpm](https://pnpm.io/) 9+, and a clone of this repo. Both lockfiles are v9, which is what CI installs with. The local preview uses the deployed Worker by default, so you can start with the frontend alone:
