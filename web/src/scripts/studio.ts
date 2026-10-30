@@ -387,12 +387,18 @@ for (const control of [localOrientation, localResolution, localSeed]) {
 promptEl.addEventListener("input", refreshGenerateButton);
 localDuration.addEventListener("change", () => {
   durationVal.textContent = localDuration.value + "s";
-  const seconds = Number(localDuration.value);
-  localHint.textContent = seconds >= 30
-    ? "Long take: Phosphene will chain several 10-second renders. This may take many hours on an 18 GB Mac."
-    : "Local jobs run sequentially on your Mac. Try 3–5 seconds first on 18 GB of memory.";
+  updateLocalHints();
+  saveLocalPreferences();
 });
-localBatch.addEventListener("change", refreshGenerateButton);
+localBatch.addEventListener("change", () => {
+  updateLocalHints();
+  refreshGenerateButton();
+  saveLocalPreferences();
+});
+localQuality.addEventListener("change", () => {
+  updateLocalHints();
+  saveLocalPreferences();
+});
 localVariations.addEventListener("input", refreshGenerateButton);
 queueRefresh.addEventListener("click", () => { void pollLocalJobs(); });
 gifButton.addEventListener("click", () => { if (selectedLocalJobId) void downloadLocalGif(selectedLocalJobId); });
@@ -405,6 +411,7 @@ function applyEngineMode(): void {
   localOpen.classList.toggle("hidden", !local || LOCAL_STUDIO);
   localCheck.classList.toggle("hidden", !local || !LOCAL_STUDIO);
   localSettings.classList.toggle("hidden", !local);
+  modelDiagnostics.classList.toggle("hidden", !local || !LOCAL_STUDIO);
   localDuration.classList.toggle("hidden", !local);
   durationEl.classList.toggle("hidden", local);
   durationEl.disabled = local;
@@ -425,6 +432,7 @@ function applyEngineMode(): void {
     ? "Phosphene handles local inference steps. Quality and batch size are configurable below."
     : "More steps may improve detail, but take longer.";
   localDuration.dispatchEvent(new Event("change"));
+  updateLocalHints();
   durationEl.dispatchEvent(new Event("input"));
   if (local) durationVal.textContent = localDuration.value + "s";
   stepsEl.dispatchEvent(new Event("input"));
@@ -808,6 +816,11 @@ async function runLocalGeneration(): Promise<void> {
     }
     const form = new FormData();
     form.append("image", state.file);
+    if (localOrientation.value !== "auto") orientation = localOrientation.value;
+    const fixedSeed = Number(localSeed.value);
+    if (!Number.isInteger(fixedSeed) || fixedSeed < -1 || fixedSeed > 2147483640) {
+      throw new Error("Enter -1 for random or a whole-number seed between 0 and 2147483640.");
+    }
     form.append("params", JSON.stringify({
       prompt: promptEl.value.trim(),
       duration_seconds: Number(localDuration.value),
@@ -815,6 +828,11 @@ async function runLocalGeneration(): Promise<void> {
       batch_count: batch,
       prompts: variants.length ? variants : null,
       quality: localQuality.value,
+      resolution: localResolution.value,
+      camera: localCamera.value,
+      intensity: localIntensity.value,
+      look: localLook.value,
+      seed: fixedSeed,
     }));
     const res = await fetch("/local/generate", {
       method: "POST", body: form, signal: controller.signal,
@@ -1073,6 +1091,6 @@ function addToHistory(url: string) {
 
 // Initial UI state: only the loopback server can submit no-quota local jobs.
 showResultState("empty");
-if (LOCAL_STUDIO) restoreLocalJobs();
+if (LOCAL_STUDIO) { restoreLocalJobs(); restoreLocalPreferences(); }
 engineEl.value = LOCAL_STUDIO ? "local" : "shared";
 applyEngineMode();
