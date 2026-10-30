@@ -67,7 +67,7 @@ def safe_loopback_url(url: str) -> bool:
         return (parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "localhost")
                 and parsed.username is None and parsed.password is None
                 and parsed.port is not None
-                and parsed.port in (*PHOSPHENE_PORTS, *AXOM_PORTS, 8188, 8788)
+                and parsed.port in (*PHOSPHENE_PORTS, *AXOM_PORTS, 8188, 8189, 8788)
                 and not parsed.fragment)
     except ValueError:
         return False
