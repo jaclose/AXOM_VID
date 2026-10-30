@@ -484,5 +484,12 @@ function withCors(res: Response, origin: string, env: Env): Response {
 }
 
 function isAllowedOrigin(origin: string, env: Env): boolean {
-  return env.ALLOWED_ORIGINS.split(",").some((allowed) => allowed.trim() === origin);
+  if (env.ALLOWED_ORIGINS.split(",").some((allowed) => allowed.trim() === origin)) {
+    return true;
+  }
+  // The public site's Cloudflare Worker is also used by the separately hosted
+  // AXOM_VID local studio, which selects ports 8765–8775 as they become free.
+  // Restrict CORS to those exact loopback HTTP origins; never use a wildcard
+  // or accept arbitrary local/LAN domains. CORS is not an authentication layer.
+  return /^http:\/\/(?:127\.0\.0\.1|localhost):(?:876[5-9]|877[0-5])$/.test(origin);
 }
