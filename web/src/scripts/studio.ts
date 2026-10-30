@@ -59,6 +59,17 @@ const localOpen     = $<HTMLParagraphElement>("[data-local-open]");
 const localCheck    = $<HTMLButtonElement>("[data-local-check]");
 const localDuration = $<HTMLSelectElement>("[data-local-duration]");
 const localSettings = $<HTMLDivElement>("[data-local-settings]");
+const localRecipe = $<HTMLSelectElement>("[data-local-recipe]");
+const localCamera = $<HTMLSelectElement>("[data-local-camera]");
+const localIntensity = $<HTMLSelectElement>("[data-local-intensity]");
+const localLook = $<HTMLSelectElement>("[data-local-look]");
+const localOrientation = $<HTMLSelectElement>("[data-local-orientation]");
+const localResolution = $<HTMLSelectElement>("[data-local-resolution]");
+const localSeed = $<HTMLInputElement>("[data-local-seed]");
+const modelDiagnostics = $<HTMLDivElement>("[data-model-diagnostics]");
+const modelStatus = $<HTMLParagraphElement>("[data-model-status]");
+const modelMemory = $<HTMLParagraphElement>("[data-model-memory]");
+const modelDownloads = $<HTMLParagraphElement>("[data-model-downloads]");
 const localBatch = $<HTMLSelectElement>("[data-local-batch]");
 const localQuality = $<HTMLSelectElement>("[data-local-quality]");
 const localVariations = $<HTMLTextAreaElement>("[data-local-variations]");
@@ -111,6 +122,16 @@ interface GpuQuota {
 let quotaRequestId = 0;
 let localEngineReady = false;
 let localCheckId = 0;
+
+const LOCAL_PREFERENCES_KEY = "AXOM_VID_LOCAL_PREFERENCES_V1";
+const CREATIVE_RECIPES: Record<string, { camera: string; intensity: string; look: string }> = {
+  natural: { camera: "steady", intensity: "natural", look: "original" },
+  cinematic: { camera: "push_in", intensity: "natural", look: "cinematic" },
+  landscape: { camera: "pan_right", intensity: "subtle", look: "documentary" },
+  product: { camera: "orbit", intensity: "subtle", look: "product" },
+  illustrated: { camera: "tracking", intensity: "natural", look: "illustrated" },
+  dynamic: { camera: "tracking", intensity: "dynamic", look: "cinematic" },
+};
 
 type LocalJobStatus = "queued" | "running" | "done" | "failed" | "error";
 interface LocalJob {
@@ -276,6 +297,92 @@ function bindRange(input: HTMLInputElement, display: HTMLSpanElement, suffix = "
 }
 bindRange(durationEl, durationVal, "s");
 bindRange(stepsEl, stepsVal);
+
+function saveLocalPreferences(): void {
+  if (!LOCAL_STUDIO) return;
+  const preferences = {
+    duration: localDuration.value,
+    quality: localQuality.value,
+    batch: localBatch.value,
+    recipe: localRecipe.value,
+    camera: localCamera.value,
+    intensity: localIntensity.value,
+    look: localLook.value,
+    orientation: localOrientation.value,
+    resolution: localResolution.value,
+    seed: localSeed.value,
+  };
+  try { localStorage.setItem(LOCAL_PREFERENCES_KEY, JSON.stringify(preferences)); }
+  catch { /* Disabled browser storage does not prevent local rendering. */ }
+}
+
+function restoreLocalPreferences(): void {
+  if (!LOCAL_STUDIO) return;
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(LOCAL_PREFERENCES_KEY) || "null");
+    if (!value || typeof value !== "object") return;
+    const preferences = value as Record<string, unknown>;
+    const controls: Record<string, HTMLSelectElement> = {
+      duration: localDuration,
+      quality: localQuality,
+      batch: localBatch,
+      recipe: localRecipe,
+      camera: localCamera,
+      intensity: localIntensity,
+      look: localLook,
+      orientation: localOrientation,
+      resolution: localResolution,
+    };
+    for (const [key, control] of Object.entries(controls)) {
+      const selected = preferences[key];
+      if (typeof selected !== "string") continue;
+      if (Array.from(control.options).some((option) => option.value === selected)) {
+        control.value = selected;
+      }
+    }
+    if (typeof preferences.seed === "string"
+        && /^-?\\d{1,10}$/.test(preferences.seed)) {
+      const seed = Number(preferences.seed);
+      if (Number.isInteger(seed) && seed >= -1 && seed <= 2147483640) localSeed.value = String(seed);
+    }
+  } catch { /* Corrupt local prefs are ignored. Source images/prompts are never stored. */ }
+}
+
+function updateLocalHints(): void {
+  const duration = Number(localDuration.value);
+  const size = Number(localResolution.value);
+  const notes = [];
+  if (duration >= 30) notes.push("Long takes chain 10-second parts and may take hours.");
+  if (duration >= 10) notes.push("Longer clips use more memory.");
+  if (size >= 640) notes.push("Higher resolution is experimental on 18 GB of RAM.");
+  if (localQuality.value === "balanced") notes.push("Balanced takes longer than Quick.");
+  if (Number(localBatch.value) > 1) notes.push("Queued generations run sequentially.");
+  if (!notes.length) notes.push("Recommended on 18 GB: Quick · 3s · 512px · 1 job.");
+  localHint.textContent = notes.join(" ");
+}
+
+function changeCreativeRecipe(): void {
+  const recipe = CREATIVE_RECIPES[localRecipe.value];
+  if (recipe) {
+    localCamera.value = recipe.camera;
+    localIntensity.value = recipe.intensity;
+    localLook.value = recipe.look;
+  }
+  saveLocalPreferences();
+}
+localRecipe.addEventListener("change", changeCreativeRecipe);
+for (const control of [localCamera, localIntensity, localLook]) {
+  control.addEventListener("change", () => {
+    localRecipe.value = "custom";
+    saveLocalPreferences();
+  });
+}
+for (const control of [localOrientation, localResolution, localSeed]) {
+  control.addEventListener("change", () => {
+    updateLocalHints();
+    saveLocalPreferences();
+  });
+}
 
 promptEl.addEventListener("input", refreshGenerateButton);
 localDuration.addEventListener("change", () => {
