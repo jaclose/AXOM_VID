@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shutil
+import time
 import socket
 import subprocess
 from unittest.mock import patch
@@ -19,7 +20,8 @@ from urllib.error import HTTPError
 from urllib.parse import parse_qs
 from urllib.request import Request, urlopen
 
-from local.bridge import LocalVideoServer, LocalVideoHandler, create_server_with_fallback
+from local.bridge import (LocalVideoServer, LocalVideoHandler,
+                          create_server_with_fallback, evaluate_generation_guard)
 
 PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
@@ -34,6 +36,7 @@ class MockPhosphene(BaseHTTPRequestHandler):
     seen_submissions = []
     job_ids = []
     download_state = {"active": False, "state": "done", "pending": []}
+    status_overrides = {}
 
     def log_message(self, *args):
         pass
@@ -77,9 +80,11 @@ class MockPhosphene(BaseHTTPRequestHandler):
                 "current": None,
                 "queue": [],
                 "history": [{"id": job_id, "status": "done",
+                             "params": {"mode": "t2v"},
                              "output_path": str(MockPhosphene.result_file),
                              "elapsed_sec": 12}
                             for job_id in MockPhosphene.job_ids],
+                **MockPhosphene.status_overrides,
             })
         else:
             self.send_error(404)
@@ -284,6 +289,104 @@ class LocalBridgeTests(unittest.TestCase):
             self._post("/local/generate", body, ctype)
         self.assertEqual(raised.exception.code, 400)
 
+
+    def test_gpu_watchdog_cooldown_is_explicit_in_health_and_rejects_submission(self):
+        started = time.time() - 50
+        watchdog = {
+            "id": "j-watchdog-test",
+            "status": "failed", "started_ts": started, "elapsed_sec": 20,
+            "error": "helper exited from SIGABRT (kIOGPUCommandBufferCallbackErrorTimeout)",
+        }
+        before = MockPhosphene.submission_count
+        with patch.object(MockPhosphene, "status_overrides", {"history": [watchdog]}):
+            status, body, _ = self._get("/local/health")
+            health = json.loads(body)
+            self.assertTrue(health["readyToGenerate"])
+            self.assertFalse(health["safeToSubmit"])
+            self.assertEqual(health["guard"]["kind"], "cooldown")
+            self.assertGreater(health["guard"]["retryAfterSeconds"], 0)
+            req_body, ctype = self._form()
+            with self.assertRaises(HTTPError) as response:
+                self._post("/local/generate", req_body, ctype)
+            self.assertEqual(response.exception.code, 429)
+        self.assertEqual(MockPhosphene.submission_count, before)
+
+    def test_busy_phosphene_gpu_prevents_duplicating_job_before_upload(self):
+        before = MockPhosphene.submission_count
+        current = {"id": "j-existing", "status": "running"}
+        with patch.object(MockPhosphene, "status_overrides",
+                          {"current": current, "gpu": {"busy": True, "holder": "queue"}}):
+            health = json.loads(self._get("/local/health")[1])
+            self.assertFalse(health["safeToSubmit"])
+            self.assertEqual(health["guard"]["kind"], "busy")
+            body, ctype = self._form()
+            with self.assertRaises(HTTPError) as response:
+                self._post("/local/generate", body, ctype)
+            self.assertEqual(response.exception.code, 409)
+        self.assertEqual(MockPhosphene.submission_count, before)
+
+    def test_q8_weight_download_pauses_new_mac_renders_without_deleting_files(self):
+        before = MockPhosphene.submission_count
+        ongoing = {"active": True, "key": "q8_25",
+                   "name": "LTX Q8 weights", "size_gb": 30.02}
+        with patch.object(MockPhosphene, "status_overrides", {"download": ongoing}):
+            health = json.loads(self._get("/local/health")[1])
+            self.assertFalse(health["safeToSubmit"])
+            self.assertEqual(health["guard"]["kind"], "download")
+            self.assertTrue(health["guard"]["unsupportedQ8Download"])
+            body, ctype = self._form()
+            with self.assertRaises(HTTPError) as response:
+                self._post("/local/generate", body, ctype)
+            self.assertEqual(response.exception.code, 409)
+        self.assertEqual(MockPhosphene.submission_count, before)
+
+    def test_unverified_gpu_uses_only_three_second_quick_single_render(self):
+        with patch.object(MockPhosphene, "status_overrides", {"history": []}):
+            health = json.loads(self._get("/local/health")[1])
+            self.assertTrue(health["safeToSubmit"])
+            self.assertTrue(health["guard"]["firstRenderRequired"])
+            self.assertEqual(health["guard"]["maxDurationSeconds"], 3)
+            for kwargs in ({"duration": 5}, {"batch": 2},
+                           {"resolution": "640"}, {"quality": "balanced"}):
+                body, ctype = self._form(**kwargs)
+                with self.assertRaises(HTTPError) as response:
+                    self._post("/local/generate", body, ctype)
+                self.assertEqual(response.exception.code, 400)
+            body, ctype = self._form()
+            with self._post("/local/generate", body, ctype) as response:
+                self.assertEqual(response.status, 200)
+
+    def test_first_verified_image_to_video_unblocks_advanced_when_ram_is_healthy(self):
+        history = [{"id": "j-done", "status": "done",
+                    "params": {"mode": "i2v"}, "output_path": "/tmp/valid.mp4"}]
+        state = {
+            "tier": {"key": "base", "ram_gb": 18, "i2v_max_dim": 768},
+            "memory": {"total_gb": 18, "pressure_pct": 51, "swap_gb": 1.0},
+            "base_available": True,
+            "model_integrity": {"ok": True},
+            "engine_env": {"ok": True},
+            "current": None, "queue": [],
+            "gpu": {"busy": False},
+            "deferred_downloads": {"active": False, "state": "done", "pending": []},
+            "history": history,
+        }
+        guard = evaluate_generation_guard(state, now=time.time())
+        self.assertTrue(guard["safeToSubmit"])
+        self.assertFalse(guard["firstRenderRequired"])
+        self.assertGreaterEqual(guard["maxDurationSeconds"], 10)
+        self.assertGreaterEqual(guard["maxBatch"], 2)
+
+    def test_high_memory_pressure_restricts_heavy_settings_even_after_success(self):
+        state = {"tier": {"key": "base", "ram_gb": 18},
+                 "memory": {"total_gb": 18, "pressure_pct": 83, "swap_gb": 18},
+                 "base_available": True, "model_integrity": {"ok": True},
+                 "current": None, "queue": [], "gpu": {"busy": False},
+                 "history": [{"status": "done", "params": {"mode": "i2v"}}]}
+        guard = evaluate_generation_guard(state, now=time.time())
+        self.assertTrue(guard["safeToSubmit"])
+        self.assertTrue(guard["memoryConstrained"])
+        self.assertEqual(guard["maxResolution"], 512)
+        self.assertEqual(guard["maxBatch"], 1)
 
     def test_health_report_distinguishes_online_panel_from_incomplete_text_encoder(self):
         unfinished = {
