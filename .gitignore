@@ -41,3 +41,7 @@ pnpm-debug.log*
 .npm-cache/
 .pnpm-store/
 .tmp/
+
+# Python local bridge interpreter cache
+__pycache__/
+*.pyc
