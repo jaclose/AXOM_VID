@@ -130,7 +130,7 @@ let localHealthTimer: number | null = null;
 
 const LOCAL_PREFERENCES_KEY = "AXOM_VID_LOCAL_PREFERENCES_V1";
 const CREATIVE_RECIPES: Record<string, { camera: string; intensity: string; look: string }> = {
-  natural: { camera: "steady", intensity: "natural", look: "original" },
+  natural: { camera: "auto", intensity: "natural", look: "original" },
   cinematic: { camera: "push_in", intensity: "natural", look: "cinematic" },
   landscape: { camera: "pan_right", intensity: "subtle", look: "documentary" },
   product: { camera: "orbit", intensity: "subtle", look: "product" },
