@@ -263,6 +263,12 @@ def parse_form(data: bytes, content_type: str) -> tuple[bytes, str, dict[str, An
         raise BridgeFailure("Seed must be -1 (random) or a number from 0 to 2147483640.", 400)
     for text in (settings.get("prompts") or [prompt]):
         composed_prompt(text, settings)
+    beats = settings.get("beats")
+    if beats not in (None, ""):
+        if seconds not in LONG_TAKES:
+            raise BridgeFailure("Timeline beats are only available for chained 30–120-second takes.", 400)
+        if not isinstance(beats, str) or len(beats) > 2400 or len(beats.splitlines()) > seconds // 5:
+            raise BridgeFailure("Provide at most one brief storyboard beat per five seconds.", 400)
     return image, mime, settings
 
 
@@ -528,6 +534,8 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
             if seconds in LONG_TAKES:
                 args["take_seconds"] = str(seconds)
                 args["take_camera"] = CAMERA_MOVES[settings.get("camera", "steady")][1]
+                if isinstance(settings.get("beats"), str) and settings["beats"].strip():
+                    args["beats"] = settings["beats"].strip()
 
             job_ids: list[str] = []
             warning: str | None = None
