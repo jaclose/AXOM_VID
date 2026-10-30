@@ -26,7 +26,7 @@ class AcceptanceTests(unittest.TestCase):
             if url.endswith("8765/local/health"):
                 return {"unexpected": "other application"}
             if url.endswith("8766/local/health"):
-                return {"online": True, "provider": "Phosphene LTX local"}
+                return {"online": True, "provider": "Phosphene LTX local", "safeToSubmit": True}
             return None
 
         result = choose_axom(fetch)
@@ -115,10 +115,28 @@ class AcceptanceTests(unittest.TestCase):
             self.assertTrue((root / "acceptance-result.json").exists())
             self.assertEqual(len([c for c in calls if c[0] == "POST"]), 1)
 
+    def test_preflight_refuses_hardware_test_during_axom_metal_watchdog_cooldown(self):
+        def fetch(url):
+            if url.endswith(":8765/local/health"):
+                return {"online": True, "provider": "Phosphene LTX local",
+                        "readyToGenerate": True, "safeToSubmit": False,
+                        "guard": {"kind": "cooldown", "retryAfterSeconds": 600}}
+            if url.endswith(":8198/status"):
+                return {"running": False, "current": None, "queue": [],
+                        "gpu": {"busy": False},
+                        "deferred_downloads": {"active": False, "state": "done"}}
+            if url.endswith(":8198/oneshot/options"):
+                return {"engines": {"ltx": {"available": True}}}
+            return None
+        status = run_preflight(fetch)
+        self.assertTrue(status["model"]["ready_to_test"])
+        self.assertFalse(status["ready_to_render"])
+        self.assertEqual(status["axom_guard_kind"], "cooldown")
+
     def test_preflight_blocks_gpu_test_while_another_local_job_is_active(self):
         def fetch(url):
             if url.endswith(":8765/local/health"):
-                return {"online": True, "provider": "Phosphene LTX local"}
+                return {"online": True, "provider": "Phosphene LTX local", "safeToSubmit": True}
             if url.endswith(":8198/status"):
                 return {
                     "running": True, "current": {"id": "j-comfy-ongoing"},
@@ -137,7 +155,7 @@ class AcceptanceTests(unittest.TestCase):
     def test_preflight_will_not_start_phosphene_during_comfyui_render(self):
         def fetch(url):
             if url.endswith(":8765/local/health"):
-                return {"online": True, "provider": "Phosphene LTX local"}
+                return {"online": True, "provider": "Phosphene LTX local", "safeToSubmit": True}
             if url.endswith(":8198/status"):
                 return {"running": False, "current": None, "queue": [],
                         "gpu": {"busy": False}, "deferred_downloads": {"active": False}}
@@ -161,7 +179,7 @@ class AcceptanceTests(unittest.TestCase):
     def test_preflight_detects_active_comfyui_on_alternate_port_8189(self):
         def fetch(url):
             if url.endswith(":8765/local/health"):
-                return {"online": True, "provider": "Phosphene LTX local"}
+                return {"online": True, "provider": "Phosphene LTX local", "safeToSubmit": True}
             if url.endswith(":8198/status"):
                 return {"running": False, "current": None, "queue": [],
                         "gpu": {"busy": False},
@@ -182,7 +200,7 @@ class AcceptanceTests(unittest.TestCase):
     def test_preflight_can_accept_idle_model_without_other_jobs(self):
         def fetch(url):
             if url.endswith(":8765/local/health"):
-                return {"online": True, "provider": "Phosphene LTX local"}
+                return {"online": True, "provider": "Phosphene LTX local", "safeToSubmit": True}
             if url.endswith(":8198/status"):
                 return {"running": False, "current": None, "queue": [],
                         "gpu": {"busy": False},
