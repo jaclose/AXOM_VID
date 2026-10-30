@@ -71,6 +71,7 @@ const safePresetButton = $<HTMLButtonElement>("[data-safe-preset]");
 const modelStatus = $<HTMLParagraphElement>("[data-model-status]");
 const modelMemory = $<HTMLParagraphElement>("[data-model-memory]");
 const modelDownloads = $<HTMLParagraphElement>("[data-model-downloads]");
+const modelGuard = $<HTMLParagraphElement>("[data-model-guard]");
 const localBatch = $<HTMLSelectElement>("[data-local-batch]");
 const localQuality = $<HTMLSelectElement>("[data-local-quality]");
 const localVariations = $<HTMLTextAreaElement>("[data-local-variations]");
@@ -125,6 +126,7 @@ interface GpuQuota {
 
 let quotaRequestId = 0;
 let localEngineReady = false;
+let lastLocalGuard: LocalHealth["guard"] | null = null;
 let localCheckId = 0;
 let localHealthTimer: number | null = null;
 
@@ -366,6 +368,9 @@ function updateLocalHints(): void {
   if (size >= 640) notes.push("Higher resolution is experimental on 18 GB of RAM.");
   if (localQuality.value === "balanced") notes.push("Balanced takes longer than Quick.");
   if (Number(localBatch.value) > 1) notes.push("Queued generations run sequentially.");
+  if (lastLocalGuard && !localSettingsAreSafe()) {
+    notes.unshift("Current settings exceed the Mac's safe limits. Choose Use low-memory preset.");
+  }
   if (!notes.length) notes.push("Recommended on 18 GB: Quick · 3s · 512px · 1 job.");
   localHint.textContent = notes.join(" ");
 }
@@ -406,6 +411,7 @@ for (const control of [localCamera, localIntensity, localLook]) {
 for (const control of [localOrientation, localResolution, localSeed]) {
   control.addEventListener("change", () => {
     updateLocalHints();
+    refreshGenerateButton();
     saveLocalPreferences();
   });
 }
@@ -414,6 +420,7 @@ promptEl.addEventListener("input", refreshGenerateButton);
 localDuration.addEventListener("change", () => {
   durationVal.textContent = localDuration.value + "s";
   updateLocalHints();
+  refreshGenerateButton();
   saveLocalPreferences();
 });
 localBatch.addEventListener("change", () => {
@@ -423,6 +430,7 @@ localBatch.addEventListener("change", () => {
 });
 localQuality.addEventListener("change", () => {
   updateLocalHints();
+  refreshGenerateButton();
   saveLocalPreferences();
 });
 localVariations.addEventListener("input", refreshGenerateButton);
@@ -481,6 +489,20 @@ function applyEngineMode(): void {
 interface LocalHealth {
   online?: boolean;
   readyToGenerate?: boolean;
+  safeToSubmit?: boolean;
+  guard?: {
+    kind: "ready" | "busy" | "cooldown" | "download" | "model";
+    message: string;
+    retryAfterSeconds: number;
+    unsupportedQ8Download: boolean;
+    firstRenderRequired: boolean;
+    memoryConstrained: boolean;
+    maxDurationSeconds: number;
+    maxResolution: number;
+    maxBatch: number;
+    allowedQualities: string[];
+    comfyBusy: boolean;
+  };
   baseAvailable?: boolean;
   modelIntegrityOK?: boolean;
   tier?: string;
@@ -524,14 +546,19 @@ async function checkLocalEngine(): Promise<void> {
     if (reqId !== localCheckId || engineEl.value !== "local") return;
     const value = data as LocalHealth;
     const online = value.online === true;
-    localEngineReady = online && value.readyToGenerate === true;
+    lastLocalGuard = online ? value.guard || null : null;
+    localEngineReady = online && value.readyToGenerate === true && value.safeToSubmit === true;
 
     if (online) void pollLocalJobs();
 
     if (!online) {
       engineHelp.textContent = value.error || "Phosphene is offline. Start it in Pinokio, then check again.";
+    } else if (lastLocalGuard && !lastLocalGuard.message.startsWith("The engine is idle.")
+               && !localEngineReady) {
+      engineHelp.textContent = lastLocalGuard.message;
     } else if (localEngineReady) {
-      engineHelp.textContent = "Phosphene Q4 ready. Jobs run on this Mac without daily account quotas.";
+      engineHelp.textContent = lastLocalGuard?.message
+        || "Phosphene Q4 ready. Jobs run on this Mac without daily account quotas.";
     } else if (value.download?.gemmaPending) {
       engineHelp.textContent = "Phosphene is online, but Gemma text encoder is still downloading. Let it finish.";
     } else {
@@ -540,10 +567,13 @@ async function checkLocalEngine(): Promise<void> {
 
     quotaEl.dataset.state = localEngineReady ? "ready" : "empty";
     quotaEl.textContent = localEngineReady
-      ? "Local engine ready · " + (value.busy ? "GPU busy" : "GPU idle")
-        + (typeof value.queued === "number" ? " · " + value.queued + " queued" : "")
+      ? "Mac GPU available · no daily provider quota · "
+        + (lastLocalGuard?.firstRenderRequired ? "first validation: Quick 3s / 512px" : "local render ready")
       : online
-        ? "Local model not ready. Do not resubmit until required downloads finish."
+        ? (lastLocalGuard?.kind === "cooldown" ? "Metal GPU cooldown active"
+          : lastLocalGuard?.kind === "busy" ? "Mac GPU busy: avoid duplicate renders"
+          : lastLocalGuard?.kind === "download" ? "Model download active: avoid running GPU simultaneously"
+          : "Local model not ready for another job")
         : "Local renderer offline. Shared cloud mode is separate and quota-limited.";
 
     modelStatus.textContent = !online ? "Phosphene panel offline."
@@ -567,8 +597,15 @@ async function checkLocalEngine(): Promise<void> {
         .map((item) => item.name || item.key || "model").join("; ")
         + (pending.length > 3 ? "; and " + (pending.length - 3) + " more" : "");
     } else {
-      modelDownloads.textContent = online ? "No pending model downloads reported." : "";
+      modelDownloads.textContent = online ? "No pending deferred downloads reported." : "";
     }
+    modelGuard.textContent = lastLocalGuard
+      ? "Mac safety: " + lastLocalGuard.message
+        + (lastLocalGuard.firstRenderRequired
+          ? " Start with one 3-second Quick 512px clip before long takes or batches."
+          : "")
+      : "Safety limits could not be checked.";
+    updateLocalHints();
   } catch {
     if (reqId !== localCheckId || engineEl.value !== "local") return;
     engineHelp.textContent = "Cannot reach the local video bridge. Start AXOM_VID from its SSD launcher.";
@@ -577,6 +614,8 @@ async function checkLocalEngine(): Promise<void> {
     modelStatus.textContent = "No local model status available.";
     modelMemory.textContent = "";
     modelDownloads.textContent = "";
+    modelGuard.textContent = "Mac safety checks unavailable.";
+    lastLocalGuard = null;
   }
   refreshGenerateButton();
   scheduleLocalHealthCheck();
@@ -585,9 +624,17 @@ async function checkLocalEngine(): Promise<void> {
 
 // ---------- UI state helpers ----------
 
+function localSettingsAreSafe(): boolean {
+  if (!lastLocalGuard) return false;
+  return Number(localDuration.value) <= lastLocalGuard.maxDurationSeconds
+    && Number(localBatch.value) <= lastLocalGuard.maxBatch
+    && Number(localResolution.value) <= lastLocalGuard.maxResolution
+    && lastLocalGuard.allowedQualities.includes(localQuality.value);
+}
+
 function refreshGenerateButton() {
   const ready = !!state.file && promptEl.value.trim().length > 0 && !state.busy &&
-    (engineEl.value === "shared" || (LOCAL_STUDIO && localEngineReady));
+    (engineEl.value === "shared" || (LOCAL_STUDIO && localEngineReady && localSettingsAreSafe()));
   generateBtn.disabled = !ready;
 }
 

@@ -63,7 +63,150 @@ VISUAL_LOOKS = {
 }
 
 
-def summarize_panel_status(state: dict[str, Any]) -> dict[str, Any]:
+def evaluate_generation_guard(
+    state: dict[str, Any], *, now: float | None = None,
+    comfy_busy: bool = False,
+) -> dict[str, Any]:
+    """Protect an 18 GB Mac from duplicate jobs and known Metal crashes.
+
+    'model installed' and 'safe to submit right now' are separate claims.
+    This does not cancel existing work or override the owner's install queue.
+    """
+    now = time.time() if now is None else now
+    memory = state.get("memory") if isinstance(state.get("memory"), dict) else {}
+    total = memory.get("total_gb")
+    pressure = memory.get("pressure_pct")
+    swap = memory.get("swap_gb")
+    total = float(total) if isinstance(total, (int, float)) and not isinstance(total, bool) else 18.0
+    pressure = float(pressure) if isinstance(pressure, (int, float)) and not isinstance(pressure, bool) else 100.0
+    swap = float(swap) if isinstance(swap, (int, float)) and not isinstance(swap, bool) else 0.0
+    constrained = total <= 24 and (pressure >= 80 or swap >= 8)
+
+    queue = state.get("queue")
+    gpu = state.get("gpu") if isinstance(state.get("gpu"), dict) else {}
+    busy = (isinstance(state.get("current"), dict)
+            or (isinstance(queue, list) and bool(queue))
+            or gpu.get("busy") is True or comfy_busy)
+
+    history = state.get("history")
+    history = history if isinstance(history, list) else []
+    completed_i2v = any(
+        isinstance(job, dict) and job.get("status") == "done"
+        and isinstance(job.get("params"), dict)
+        and job["params"].get("mode") in ("i2v", "i2v_clean_audio")
+        for job in history
+    )
+    retry = 0
+    recent_watchdog = False
+    for job in reversed(history[-100:]):
+        if not isinstance(job, dict) or job.get("status") != "failed":
+            continue
+        error = str(job.get("error", ""))
+        if not ("kIOGPUCommandBufferCallbackErrorTimeout" in error
+                or ("SIGABRT" in error and "Metal" in error)):
+            continue
+        recent_watchdog = True
+        started = job.get("started_ts")
+        elapsed = job.get("elapsed_sec")
+        if (isinstance(started, (int, float)) and isinstance(elapsed, (int, float))
+                and not isinstance(started, bool) and not isinstance(elapsed, bool)):
+            finished = float(started) + float(elapsed)
+            retry = max(retry, max(0, int(finished + 900 - now + 0.999)))
+        # Never assume a cooldown is in progress if the server omitted time.
+        break
+
+    download = state.get("download")
+    download = download if isinstance(download, dict) else {}
+    download_active = download.get("active") is True
+    tier = state.get("tier") if isinstance(state.get("tier"), dict) else {}
+    unsupported_q8 = (
+        download_active and str(download.get("key", "")).startswith("q8")
+        and tier.get("allows_q8") is False
+    )
+    deferred = state.get("deferred_downloads")
+    deferred = deferred if isinstance(deferred, dict) else {}
+    pending = deferred.get("pending")
+    pending = pending if isinstance(pending, list) else []
+    gemma_pending = (
+        deferred.get("active") is True and deferred.get("key") == "gemma"
+        or any(isinstance(x, dict) and x.get("key") == "gemma" for x in pending)
+    )
+    integrity = state.get("model_integrity")
+    integrity = integrity if isinstance(integrity, dict) else {}
+    env = state.get("engine_env")
+    env = env if isinstance(env, dict) else {}
+    ready_model = (state.get("base_available") is True
+                   and integrity.get("ok") is True
+                   and env.get("ok") is not False
+                   and not gemma_pending)
+    trial = not completed_i2v
+    # First require one successful 3s 512px Q4 Quick video. Later allow
+    # higher settings only as memory pressure subsides.
+    max_seconds = 3 if trial else (5 if constrained else 120)
+    max_batch = 1 if trial or constrained else 6
+    max_resolution = 512 if trial or constrained else 704
+    qualities = ["quick"] if trial or constrained else ["quick", "balanced"]
+
+    if not ready_model:
+        kind = "model"
+        message = "LTX Q4/Gemma is not verified ready. Complete model setup first."
+    elif retry > 0:
+        kind = "cooldown"
+        message = ("Phosphene's last job hit the macOS Metal GPU watchdog. "
+                   f"Allow recovery for another {max(1, (retry + 59) // 60)} minute(s); "
+                   "do not resubmit the failed render.")
+    elif busy:
+        kind = "busy"
+        message = ("Your Mac GPU is occupied by Phosphene or ComfyUI. "
+                   "Finish the current workload before submitting another video.")
+    elif download_active:
+        kind = "download"
+        message = ("Phosphene is actively downloading model weights. "
+                   "Avoid running inference concurrently on this 18 GB Mac.")
+        if unsupported_q8:
+            message += (" The Q8 download cannot run in Phosphene's current Compact tier; "
+                        "review the download in Pinokio rather than deleting files.")
+    else:
+        kind = "ready"
+        message = ("Start with a single 3-second Quick 512px image-to-video validation."
+                   if trial else
+                   "The engine is idle. Higher settings remain subject to GPU memory.")
+        if constrained:
+            message += " Heavy swap/memory pressure detected; keep the 512px Quick preset."
+
+    return {
+        "safeToSubmit": kind == "ready",
+        "kind": kind,
+        "message": message,
+        "retryAfterSeconds": retry,
+        "unsupportedQ8Download": unsupported_q8,
+        "firstRenderRequired": trial,
+        "memoryConstrained": constrained,
+        "recentGpuWatchdog": recent_watchdog,
+        "maxDurationSeconds": max_seconds,
+        "maxResolution": max_resolution,
+        "maxBatch": max_batch,
+        "allowedQualities": qualities,
+        "comfyBusy": comfy_busy,
+    }
+
+
+def _comfyui_busy() -> bool:
+    """Read-only probe of local ComfyUI queues, never a render action."""
+    for port in (8189, 8188):
+        try:
+            with urlopen(f"http://127.0.0.1:{port}/queue", timeout=0.4) as res:
+                data = json.loads(res.read(64 * 1024))
+            if isinstance(data, dict) and any(
+                k in data for k in ("queue_running", "queue_pending")
+            ):
+                return bool(data.get("queue_running") or data.get("queue_pending"))
+        except (OSError, ValueError, UnicodeError):
+            continue
+    return False
+
+
+def summarize_panel_status(state: dict[str, Any], *, comfy_busy: bool = False) -> dict[str, Any]:
     """Browser-safe capabilities from the local panel; no private paths."""
     deferred = state.get("deferred_downloads")
     deferred = deferred if isinstance(deferred, dict) else {}
@@ -100,6 +243,7 @@ def summarize_panel_status(state: dict[str, Any]) -> dict[str, Any]:
     gpu = state.get("gpu")
     gpu = gpu if isinstance(gpu, dict) else {}
     model_ready = base and quality and healthy and not downloading_gemma
+    guard = evaluate_generation_guard(state, comfy_busy=comfy_busy)
     max_dim = tier.get("i2v_max_dim")
     if not isinstance(max_dim, int) or not (256 <= max_dim <= 8192):
         max_dim = 512
@@ -109,6 +253,8 @@ def summarize_panel_status(state: dict[str, Any]) -> dict[str, Any]:
         "baseAvailable": base,
         "modelIntegrityOK": quality,
         "readyToGenerate": model_ready,
+        "safeToSubmit": model_ready and guard["safeToSubmit"],
+        "guard": guard,
         "download": {
             "active": deferred.get("active") is True,
             "state": str(deferred.get("state", "unknown"))[:40],
@@ -441,7 +587,7 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
             if route.path == "/local/health":
                 try:
                     status = _json_response_from_upstream(self.server.phosphene_url, "/status")
-                    self._json(summarize_panel_status(status))
+                    self._json(summarize_panel_status(status, comfy_busy=_comfyui_busy()))
                 except BridgeFailure as err:
                     self._json({"online": False, "error": str(err)})
                 return
@@ -487,19 +633,28 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
                 raise BridgeFailure("Image upload was incomplete.", 400)
             image, mime, settings = parse_form(raw, self.headers.get("Content-Type", ""))
             panel = _json_response_from_upstream(self.server.phosphene_url, "/status")
-            summary = summarize_panel_status(panel)
-            if not summary["readyToGenerate"]:
-                if summary["download"]["gemmaPending"]:
-                    raise BridgeFailure(
-                        "Phosphene is downloading its Gemma text encoder. "
-                        "Let it finish before generating videos.", 503,
-                    )
-                raise BridgeFailure(
-                    "Phosphene Q4 model is not verified ready. Check its Model panel.", 503,
-                )
+            summary = summarize_panel_status(panel, comfy_busy=_comfyui_busy())
+            if not summary["safeToSubmit"]:
+                guard = summary["guard"]
+                status = (429 if guard["kind"] == "cooldown"
+                          else 503 if guard["kind"] == "model" else 409)
+                raise BridgeFailure(guard["message"], status)
+            guard = summary["guard"]
             size = RESOLUTION_SIZES[str(settings.get("resolution", "512"))]
             if max(size) > summary["resolutionMax"]:
                 raise BridgeFailure("This resolution exceeds the installed Mac hardware tier.", 400)
+            if (settings["duration_seconds"] > guard["maxDurationSeconds"]
+                    or settings["batch_count"] > guard["maxBatch"]
+                    or max(size) > guard["maxResolution"]
+                    or settings.get("quality", "quick") not in guard["allowedQualities"]):
+                raise BridgeFailure(
+                    "For this Mac's current stability level, use "
+                    f"up to {guard['maxDurationSeconds']}s, "
+                    f"{guard['maxResolution']}px, "
+                    f"{guard['maxBatch']} job(s), "
+                    f"quality: {', '.join(guard['allowedQualities'])}. "
+                    "Complete a 3-second Quick test before increasing settings.", 400,
+                )
             upload_body, upload_type = multipart_image(image, mime)
             uploaded = _json_response_from_upstream(
                 self.server.phosphene_url, "/upload", body=upload_body,
