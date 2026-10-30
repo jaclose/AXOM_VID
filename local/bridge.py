@@ -433,12 +433,7 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
             if route.path == "/local/health":
                 try:
                     status = _json_response_from_upstream(self.server.phosphene_url, "/status")
-                    self._json({
-                        "online": True,
-                        "busy": isinstance(status.get("current"), dict),
-                        "queued": len(status.get("queue", [])) if isinstance(status.get("queue"), list) else 0,
-                        "provider": "Phosphene LTX local",
-                    })
+                    self._json(summarize_panel_status(status))
                 except BridgeFailure as err:
                     self._json({"online": False, "error": str(err)})
                 return
@@ -483,6 +478,20 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
             if len(raw) != length:
                 raise BridgeFailure("Image upload was incomplete.", 400)
             image, mime, settings = parse_form(raw, self.headers.get("Content-Type", ""))
+            panel = _json_response_from_upstream(self.server.phosphene_url, "/status")
+            summary = summarize_panel_status(panel)
+            if not summary["readyToGenerate"]:
+                if summary["download"]["gemmaPending"]:
+                    raise BridgeFailure(
+                        "Phosphene is downloading its Gemma text encoder. "
+                        "Let it finish before generating videos.", 503,
+                    )
+                raise BridgeFailure(
+                    "Phosphene Q4 model is not verified ready. Check its Model panel.", 503,
+                )
+            size = RESOLUTION_SIZES[str(settings.get("resolution", "512"))]
+            if max(size) > summary["resolutionMax"]:
+                raise BridgeFailure("This resolution exceeds the installed Mac hardware tier.", 400)
             upload_body, upload_type = multipart_image(image, mime)
             uploaded = _json_response_from_upstream(
                 self.server.phosphene_url, "/upload", body=upload_body,
@@ -494,6 +503,7 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
                 raise BridgeFailure("Phosphene did not accept the reference image.")
 
             portrait = settings["orientation"] == "portrait"
+            resolution = RESOLUTION_SIZES[str(settings.get("resolution", "512"))]
             seconds = settings["duration_seconds"]
             count = settings.get("batch_count", 1)
             prompts = settings.get("prompts") or [settings["prompt"].strip()] * count
@@ -501,14 +511,14 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
                 "mode": "i2v",
                 "engine": "ltx",
                 "image": image_path,
-                "width": "288" if portrait else "512",
-                "height": "512" if portrait else "288",
+                "width": str(resolution[1] if portrait else resolution[0]),
+                "height": str(resolution[0] if portrait else resolution[1]),
                 # 30-120 second takes are chained in Phosphene, one 10s part
                 # at a time; this avoids requesting an impossible single pass.
                 "frames": str(241 if seconds in LONG_TAKES else seconds * 24 + 1),
                 "frame_rate": "24",
                 "steps": "8",
-                "seed": "-1",
+                "seed": str(settings.get("seed", -1)),
                 "quality": settings.get("quality", "quick"),
                 "temporal_mode": "native",
                 "upscale": "off",
@@ -517,12 +527,15 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
             }
             if seconds in LONG_TAKES:
                 args["take_seconds"] = str(seconds)
+                args["take_camera"] = CAMERA_MOVES[settings.get("camera", "steady")][1]
 
             job_ids: list[str] = []
             warning: str | None = None
             for index, prompt in enumerate(prompts, start=1):
                 one_job = dict(args)
-                one_job["prompt"] = prompt.strip()
+                one_job["prompt"] = composed_prompt(prompt, settings)
+                seed = settings.get("seed", -1)
+                one_job["seed"] = str(seed + index - 1 if seed >= 0 else -1)
                 one_job["label"] = f"AXOM_VID · {seconds}s · render {index} of {count}"
                 try:
                     queued = _json_response_from_upstream(
