@@ -80,7 +80,7 @@ class MockPhosphene(BaseHTTPRequestHandler):
                 "current": None,
                 "queue": [],
                 "history": [{"id": job_id, "status": "done",
-                             "params": {"mode": "t2v"},
+                             "params": {"mode": "i2v"},
                              "output_path": str(MockPhosphene.result_file),
                              "elapsed_sec": 12}
                             for job_id in MockPhosphene.job_ids],
