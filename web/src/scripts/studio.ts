@@ -67,6 +67,7 @@ const localOrientation = $<HTMLSelectElement>("[data-local-orientation]");
 const localResolution = $<HTMLSelectElement>("[data-local-resolution]");
 const localSeed = $<HTMLInputElement>("[data-local-seed]");
 const modelDiagnostics = $<HTMLDivElement>("[data-model-diagnostics]");
+const safePresetButton = $<HTMLButtonElement>("[data-safe-preset]");
 const modelStatus = $<HTMLParagraphElement>("[data-model-status]");
 const modelMemory = $<HTMLParagraphElement>("[data-model-memory]");
 const modelDownloads = $<HTMLParagraphElement>("[data-model-downloads]");
@@ -122,6 +123,7 @@ interface GpuQuota {
 let quotaRequestId = 0;
 let localEngineReady = false;
 let localCheckId = 0;
+let localHealthTimer: number | null = null;
 
 const LOCAL_PREFERENCES_KEY = "AXOM_VID_LOCAL_PREFERENCES_V1";
 const CREATIVE_RECIPES: Record<string, { camera: string; intensity: string; look: string }> = {
@@ -371,6 +373,23 @@ function changeCreativeRecipe(): void {
   saveLocalPreferences();
 }
 localRecipe.addEventListener("change", changeCreativeRecipe);
+safePresetButton.addEventListener("click", () => {
+  localDuration.value = "3";
+  localQuality.value = "quick";
+  localBatch.value = "1";
+  localResolution.value = "512";
+  localOrientation.value = "auto";
+  localSeed.value = "-1";
+  localRecipe.value = "natural";
+  localVariations.value = "";
+  changeCreativeRecipe();
+  localDuration.dispatchEvent(new Event("change"));
+  updateLocalHints();
+  refreshGenerateButton();
+  saveLocalPreferences();
+  setStatus("Low-memory preset selected. Your source image and prompt are unchanged.");
+});
+
 for (const control of [localCamera, localIntensity, localLook]) {
   control.addEventListener("change", () => {
     localRecipe.value = "custom";
@@ -408,6 +427,7 @@ localCheck.addEventListener("click", () => { void checkLocalEngine(); });
 
 function applyEngineMode(): void {
   const local = engineEl.value === "local";
+  if (!local && localHealthTimer !== null) { window.clearTimeout(localHealthTimer); localHealthTimer = null; }
   localOpen.classList.toggle("hidden", !local || LOCAL_STUDIO);
   localCheck.classList.toggle("hidden", !local || !LOCAL_STUDIO);
   localSettings.classList.toggle("hidden", !local);
@@ -468,6 +488,16 @@ interface LocalHealth {
     gemmaPending?: boolean;
     pending?: Array<{ name?: string; key?: string; leftGB?: number }>;
   };
+}
+
+function scheduleLocalHealthCheck(): void {
+  if (localHealthTimer !== null) window.clearTimeout(localHealthTimer);
+  localHealthTimer = null;
+  if (!LOCAL_STUDIO || engineEl.value !== "local") return;
+  // Once an installer finishes, the generator becomes usable without an extra
+  // click. Slow polling avoids unnecessary pressure on the owner's Mac.
+  localHealthTimer = window.setTimeout(() => { void checkLocalEngine(); },
+    localEngineReady ? 60_000 : 30_000);
 }
 
 async function checkLocalEngine(): Promise<void> {
@@ -542,6 +572,7 @@ async function checkLocalEngine(): Promise<void> {
     modelDownloads.textContent = "";
   }
   refreshGenerateButton();
+  scheduleLocalHealthCheck();
 }
 
 
