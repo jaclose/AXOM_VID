@@ -427,6 +427,9 @@ def run_preflight(
         )
     )
     gpu_busy = phosphene_busy or comfy_busy
+    axom_guard = axom["health"].get("guard") if axom else None
+    axom_guard = axom_guard if isinstance(axom_guard, dict) else {}
+    axom_safe = bool(axom and axom["health"].get("safeToSubmit") is True)
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "ssd_checkout": str(ROOT),
@@ -438,9 +441,11 @@ def run_preflight(
         "local_gpu_busy": gpu_busy,
         "comfyui_gpu_busy": comfy_busy,
         "axom_bridge_online": bool(axom and axom["health"].get("online") is True),
+        "axom_safe_to_submit": axom_safe,
+        "axom_guard_kind": axom_guard.get("kind"),
+        "axom_guard_message": axom_guard.get("message"),
         "ready_to_render": bool(
-            axom and axom["health"].get("online") is True
-            and phosphene and model["ready_to_test"] and not gpu_busy
+            axom_safe and phosphene and model["ready_to_test"] and not gpu_busy
         ),
     }
 
@@ -475,6 +480,8 @@ def main() -> int:
         print("Phosphene model download is still active/blocked. Do not overwrite or remove .part files.", flush=True)
     if status["local_gpu_busy"]:
         print("Phosphene or ComfyUI has another GPU job running/queued. No acceptance render will be started.", flush=True)
+    if not status["axom_safe_to_submit"] and status["axom_guard_message"]:
+        print("AXOM_VID safety: " + str(status["axom_guard_message"]), flush=True)
 
     if args.render:
         if not status["ready_to_render"]:
