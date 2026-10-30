@@ -116,6 +116,22 @@ Its receipt is saved only on the SSD under local/reports/last-preflight.json. Wh
 
 See [the cross-conversation SSD handoff and acceptance criteria](local/COMFYUI_INTEGRATION_HANDOFF.md). A successful web request or downloaded model file alone is not proof that local inference works.
 
+## Model-aware local creative studio
+
+AXOM_VID now distinguishes *Phosphene's HTTP panel being online* from the **Q4 video model and its text encoder being ready**. The local page shows the installed model tier, integrity results, memory pressure, swap usage, and outstanding downloads. It automatically rechecks while installation is incomplete, and will not upload/generate if the required Gemma text encoder is still downloading.
+
+On Apple Silicon, choose a creative recipe (Natural, Cinematic, Landscape, Product, Illustrated, or Dynamic), or open the advanced controls to customize:
+
+- Camera (steady, push/pull, pan left/right, orbit, tracking, tilt), subtle/natural/dynamic motion, and visual treatment. These are prompt-based controls rather than pretending to manipulate unsupported model parameters.
+- Landscape/portrait orientation, fixed or randomized seeds, and safe 512-pixel output. 640-pixel and 704-pixel longer-side resolutions are marked **experimental on an 18 GB Mac**.
+- Quick/Balanced quality, 3–10 second clips or Phosphene's 30–120 second chained One Take mode. Optional storyboard beats let the user direct each five-second segment of a long take.
+- Up to six queued generations, optional distinct motion prompts, local MP4 previews and GIF export. Personal settings are remembered only in this browser; source images and prompt text are **not** saved as preferences.
+- **Use low-memory preset** restores Quick, 3 seconds, 512px, one job, without clearing the source image or main prompt.
+
+The [October 30 Mac model and capability audit](local/MODEL_AUDIT_2026-10-30.md) records what is verified installed, downloading, missing, or excluded by the M3 Pro's 18 GB memory limit. It also distinguishes the short ComfyUI Wan 5B output from an actual high-quality video test. Reports from the local acceptance script stay inside the user's SSD checkout.
+
+**Maximal settings warning:** The separate free cloud backend's 4.5-second/12-step synthetic test returned an upstream `event: error` with `data: null`; 1.5-second/3-step generation succeeded. Local LTX High/Q8 and Hailuo H3 are unsupported by the current machine's Phosphene capability tier. Longer and larger options are not automatically reliable or free of hardware limits.
+
 ## Run locally
 
 You need Node 20+, [pnpm](https://pnpm.io/) 9+, and a clone of this repo. Both lockfiles are v9, which is what CI installs with. The local preview uses the deployed Worker by default, so you can start with the frontend alone:
