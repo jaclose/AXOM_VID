@@ -257,6 +257,15 @@ const assetBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
             Up to six jobs are queued one at a time, not rendered concurrently.
           </p>
         </div>
+        <div data-local-beats-wrap class="hidden space-y-2">
+          <label for="local-beats" class="field-label block">One Take storyboard beats</label>
+          <textarea id="local-beats" data-local-beats rows="4"
+            class="prompt-input w-full px-3 py-2 resize-y" maxlength="2400"
+            placeholder="One scene action per five seconds, top to bottom. Leave blank for the main motion prompt to guide all parts."></textarea>
+          <p class="field-hint" data-local-beats-hint>
+            Phosphene applies each line to a five-second segment. Blank lines hold the current moment.
+          </p>
+        </div>
       </div>
 
       <div class="action-row flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:gap-3">
