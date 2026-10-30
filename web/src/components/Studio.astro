@@ -191,6 +191,7 @@ const assetBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
             <div>
               <label class="field-label block mb-2" for="local-camera">Camera movement</label>
               <select id="local-camera" data-local-camera class="prompt-input w-full px-3 py-2">
+                <option value="auto">Follow prompt · no camera override</option>
                 <option value="steady">Steady / fixed</option>
                 <option value="push_in">Push in</option>
                 <option value="pull_back">Pull back</option>
