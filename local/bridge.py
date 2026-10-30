@@ -206,7 +206,7 @@ def _comfyui_busy() -> bool:
     return False
 
 
-def summarize_panel_status(state: dict[str, Any]) -> dict[str, Any]:
+def summarize_panel_status(state: dict[str, Any], *, comfy_busy: bool = False) -> dict[str, Any]:
     """Browser-safe capabilities from the local panel; no private paths."""
     deferred = state.get("deferred_downloads")
     deferred = deferred if isinstance(deferred, dict) else {}
@@ -243,6 +243,7 @@ def summarize_panel_status(state: dict[str, Any]) -> dict[str, Any]:
     gpu = state.get("gpu")
     gpu = gpu if isinstance(gpu, dict) else {}
     model_ready = base and quality and healthy and not downloading_gemma
+    guard = evaluate_generation_guard(state, comfy_busy=comfy_busy)
     max_dim = tier.get("i2v_max_dim")
     if not isinstance(max_dim, int) or not (256 <= max_dim <= 8192):
         max_dim = 512
@@ -252,6 +253,8 @@ def summarize_panel_status(state: dict[str, Any]) -> dict[str, Any]:
         "baseAvailable": base,
         "modelIntegrityOK": quality,
         "readyToGenerate": model_ready,
+        "safeToSubmit": model_ready and guard["safeToSubmit"],
+        "guard": guard,
         "download": {
             "active": deferred.get("active") is True,
             "state": str(deferred.get("state", "unknown"))[:40],
@@ -584,7 +587,7 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
             if route.path == "/local/health":
                 try:
                     status = _json_response_from_upstream(self.server.phosphene_url, "/status")
-                    self._json(summarize_panel_status(status))
+                    self._json(summarize_panel_status(status, comfy_busy=_comfyui_busy()))
                 except BridgeFailure as err:
                     self._json({"online": False, "error": str(err)})
                 return
@@ -630,19 +633,28 @@ class LocalVideoHandler(SimpleHTTPRequestHandler):
                 raise BridgeFailure("Image upload was incomplete.", 400)
             image, mime, settings = parse_form(raw, self.headers.get("Content-Type", ""))
             panel = _json_response_from_upstream(self.server.phosphene_url, "/status")
-            summary = summarize_panel_status(panel)
-            if not summary["readyToGenerate"]:
-                if summary["download"]["gemmaPending"]:
-                    raise BridgeFailure(
-                        "Phosphene is downloading its Gemma text encoder. "
-                        "Let it finish before generating videos.", 503,
-                    )
-                raise BridgeFailure(
-                    "Phosphene Q4 model is not verified ready. Check its Model panel.", 503,
-                )
+            summary = summarize_panel_status(panel, comfy_busy=_comfyui_busy())
+            if not summary["safeToSubmit"]:
+                guard = summary["guard"]
+                status = (429 if guard["kind"] == "cooldown"
+                          else 503 if guard["kind"] == "model" else 409)
+                raise BridgeFailure(guard["message"], status)
+            guard = summary["guard"]
             size = RESOLUTION_SIZES[str(settings.get("resolution", "512"))]
             if max(size) > summary["resolutionMax"]:
                 raise BridgeFailure("This resolution exceeds the installed Mac hardware tier.", 400)
+            if (settings["duration_seconds"] > guard["maxDurationSeconds"]
+                    or settings["batch_count"] > guard["maxBatch"]
+                    or max(size) > guard["maxResolution"]
+                    or settings.get("quality", "quick") not in guard["allowedQualities"]):
+                raise BridgeFailure(
+                    "For this Mac's current stability level, use "
+                    f"up to {guard['maxDurationSeconds']}s, "
+                    f"{guard['maxResolution']}px, "
+                    f"{guard['maxBatch']} job(s), "
+                    f"quality: {', '.join(guard['allowedQualities'])}. "
+                    "Complete a 3-second Quick test before increasing settings.", 400,
+                )
             upload_body, upload_type = multipart_image(image, mime)
             uploaded = _json_response_from_upstream(
                 self.server.phosphene_url, "/upload", body=upload_body,
