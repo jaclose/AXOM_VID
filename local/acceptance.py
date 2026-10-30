@@ -67,7 +67,7 @@ def safe_loopback_url(url: str) -> bool:
         return (parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "localhost")
                 and parsed.username is None and parsed.password is None
                 and parsed.port is not None
-                and parsed.port in (*PHOSPHENE_PORTS, *AXOM_PORTS, 8188, 8788)
+                and parsed.port in (*PHOSPHENE_PORTS, *AXOM_PORTS, 8188, 8189, 8788)
                 and not parsed.fragment)
     except ValueError:
         return False
@@ -401,8 +401,19 @@ def run_preflight(
         ) if phosphene else
         {"state": "offline", "ready_to_test": False}
     )
-    comfy = fetch("http://127.0.0.1:8188/system_stats")
-    comfy_queue = fetch("http://127.0.0.1:8188/queue")
+    comfy_url: str | None = None
+    comfy: dict[str, Any] | None = None
+    comfy_queue: dict[str, Any] | None = None
+    # Real installations often run a second ComfyUI process on 8189;
+    # avoid a false "offline" result when 8188 is unused.
+    for port in (8188, 8189):
+        candidate_url = f"http://127.0.0.1:{port}"
+        candidate = fetch(candidate_url + "/system_stats")
+        if isinstance(candidate, dict) and "system" in candidate:
+            comfy_url = candidate_url
+            comfy = candidate
+            comfy_queue = fetch(candidate_url + "/queue")
+            break
     comfy_busy = bool(
         isinstance(comfy_queue, dict)
         and (comfy_queue.get("queue_running") or comfy_queue.get("queue_pending"))
@@ -423,6 +434,7 @@ def run_preflight(
         "phosphene": {"url": phosphene["url"], "online": True} if phosphene else None,
         "model": model,
         "comfyui_http_responsive": isinstance(comfy, dict) and "system" in comfy,
+        "comfyui_url": comfy_url,
         "local_gpu_busy": gpu_busy,
         "comfyui_gpu_busy": comfy_busy,
         "axom_bridge_online": bool(axom and axom["health"].get("online") is True),

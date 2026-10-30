@@ -59,9 +59,24 @@ const localOpen     = $<HTMLParagraphElement>("[data-local-open]");
 const localCheck    = $<HTMLButtonElement>("[data-local-check]");
 const localDuration = $<HTMLSelectElement>("[data-local-duration]");
 const localSettings = $<HTMLDivElement>("[data-local-settings]");
+const localRecipe = $<HTMLSelectElement>("[data-local-recipe]");
+const localCamera = $<HTMLSelectElement>("[data-local-camera]");
+const localIntensity = $<HTMLSelectElement>("[data-local-intensity]");
+const localLook = $<HTMLSelectElement>("[data-local-look]");
+const localOrientation = $<HTMLSelectElement>("[data-local-orientation]");
+const localResolution = $<HTMLSelectElement>("[data-local-resolution]");
+const localSeed = $<HTMLInputElement>("[data-local-seed]");
+const modelDiagnostics = $<HTMLDivElement>("[data-model-diagnostics]");
+const safePresetButton = $<HTMLButtonElement>("[data-safe-preset]");
+const modelStatus = $<HTMLParagraphElement>("[data-model-status]");
+const modelMemory = $<HTMLParagraphElement>("[data-model-memory]");
+const modelDownloads = $<HTMLParagraphElement>("[data-model-downloads]");
 const localBatch = $<HTMLSelectElement>("[data-local-batch]");
 const localQuality = $<HTMLSelectElement>("[data-local-quality]");
 const localVariations = $<HTMLTextAreaElement>("[data-local-variations]");
+const localBeatsWrap = $<HTMLDivElement>("[data-local-beats-wrap]");
+const localBeats = $<HTMLTextAreaElement>("[data-local-beats]");
+const localBeatsHint = $<HTMLParagraphElement>("[data-local-beats-hint]");
 const localHint = $<HTMLParagraphElement>("[data-local-hint]");
 const localQueueWrap = $<HTMLDivElement>("[data-local-queue]");
 const localJobList = $<HTMLUListElement>("[data-local-job-list]");
@@ -111,6 +126,17 @@ interface GpuQuota {
 let quotaRequestId = 0;
 let localEngineReady = false;
 let localCheckId = 0;
+let localHealthTimer: number | null = null;
+
+const LOCAL_PREFERENCES_KEY = "AXOM_VID_LOCAL_PREFERENCES_V1";
+const CREATIVE_RECIPES: Record<string, { camera: string; intensity: string; look: string }> = {
+  natural: { camera: "auto", intensity: "natural", look: "original" },
+  cinematic: { camera: "push_in", intensity: "natural", look: "cinematic" },
+  landscape: { camera: "pan_right", intensity: "subtle", look: "documentary" },
+  product: { camera: "orbit", intensity: "subtle", look: "product" },
+  illustrated: { camera: "tracking", intensity: "natural", look: "illustrated" },
+  dynamic: { camera: "tracking", intensity: "dynamic", look: "cinematic" },
+};
 
 type LocalJobStatus = "queued" | "running" | "done" | "failed" | "error";
 interface LocalJob {
@@ -277,15 +303,128 @@ function bindRange(input: HTMLInputElement, display: HTMLSpanElement, suffix = "
 bindRange(durationEl, durationVal, "s");
 bindRange(stepsEl, stepsVal);
 
+function saveLocalPreferences(): void {
+  if (!LOCAL_STUDIO) return;
+  const preferences = {
+    duration: localDuration.value,
+    quality: localQuality.value,
+    batch: localBatch.value,
+    recipe: localRecipe.value,
+    camera: localCamera.value,
+    intensity: localIntensity.value,
+    look: localLook.value,
+    orientation: localOrientation.value,
+    resolution: localResolution.value,
+    seed: localSeed.value,
+  };
+  try { localStorage.setItem(LOCAL_PREFERENCES_KEY, JSON.stringify(preferences)); }
+  catch { /* Disabled browser storage does not prevent local rendering. */ }
+}
+
+function restoreLocalPreferences(): void {
+  if (!LOCAL_STUDIO) return;
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(LOCAL_PREFERENCES_KEY) || "null");
+    if (!value || typeof value !== "object") return;
+    const preferences = value as Record<string, unknown>;
+    const controls: Record<string, HTMLSelectElement> = {
+      duration: localDuration,
+      quality: localQuality,
+      batch: localBatch,
+      recipe: localRecipe,
+      camera: localCamera,
+      intensity: localIntensity,
+      look: localLook,
+      orientation: localOrientation,
+      resolution: localResolution,
+    };
+    for (const [key, control] of Object.entries(controls)) {
+      const selected = preferences[key];
+      if (typeof selected !== "string") continue;
+      if (Array.from(control.options).some((option) => option.value === selected)) {
+        control.value = selected;
+      }
+    }
+    if (typeof preferences.seed === "string"
+        && /^-?\d{1,10}$/.test(preferences.seed)) {
+      const seed = Number(preferences.seed);
+      if (Number.isInteger(seed) && seed >= -1 && seed <= 2147483640) localSeed.value = String(seed);
+    }
+  } catch { /* Corrupt local prefs are ignored. Source images/prompts are never stored. */ }
+}
+
+function updateLocalHints(): void {
+  const duration = Number(localDuration.value);
+  const size = Number(localResolution.value);
+  const notes = [];
+  localBeatsWrap.classList.toggle("hidden", duration < 30);
+  localBeatsHint.textContent = duration >= 30
+    ? "Optional: up to " + (duration / 5) + " scene beats, one per five seconds. Blank lines hold the prior moment."
+    : "Storyboard beats require a 30-second or longer chained take.";
+  if (duration >= 30) notes.push("Long takes chain 10-second parts and may take hours.");
+  if (duration >= 10) notes.push("Longer clips use more memory.");
+  if (size >= 640) notes.push("Higher resolution is experimental on 18 GB of RAM.");
+  if (localQuality.value === "balanced") notes.push("Balanced takes longer than Quick.");
+  if (Number(localBatch.value) > 1) notes.push("Queued generations run sequentially.");
+  if (!notes.length) notes.push("Recommended on 18 GB: Quick · 3s · 512px · 1 job.");
+  localHint.textContent = notes.join(" ");
+}
+
+function changeCreativeRecipe(): void {
+  const recipe = CREATIVE_RECIPES[localRecipe.value];
+  if (recipe) {
+    localCamera.value = recipe.camera;
+    localIntensity.value = recipe.intensity;
+    localLook.value = recipe.look;
+  }
+  saveLocalPreferences();
+}
+localRecipe.addEventListener("change", changeCreativeRecipe);
+safePresetButton.addEventListener("click", () => {
+  localDuration.value = "3";
+  localQuality.value = "quick";
+  localBatch.value = "1";
+  localResolution.value = "512";
+  localOrientation.value = "auto";
+  localSeed.value = "-1";
+  localRecipe.value = "natural";
+  localVariations.value = "";
+  changeCreativeRecipe();
+  localDuration.dispatchEvent(new Event("change"));
+  updateLocalHints();
+  refreshGenerateButton();
+  saveLocalPreferences();
+  setStatus("Low-memory preset selected. Your source image and prompt are unchanged.");
+});
+
+for (const control of [localCamera, localIntensity, localLook]) {
+  control.addEventListener("change", () => {
+    localRecipe.value = "custom";
+    saveLocalPreferences();
+  });
+}
+for (const control of [localOrientation, localResolution, localSeed]) {
+  control.addEventListener("change", () => {
+    updateLocalHints();
+    saveLocalPreferences();
+  });
+}
+
 promptEl.addEventListener("input", refreshGenerateButton);
 localDuration.addEventListener("change", () => {
   durationVal.textContent = localDuration.value + "s";
-  const seconds = Number(localDuration.value);
-  localHint.textContent = seconds >= 30
-    ? "Long take: Phosphene will chain several 10-second renders. This may take many hours on an 18 GB Mac."
-    : "Local jobs run sequentially on your Mac. Try 3–5 seconds first on 18 GB of memory.";
+  updateLocalHints();
+  saveLocalPreferences();
 });
-localBatch.addEventListener("change", refreshGenerateButton);
+localBatch.addEventListener("change", () => {
+  updateLocalHints();
+  refreshGenerateButton();
+  saveLocalPreferences();
+});
+localQuality.addEventListener("change", () => {
+  updateLocalHints();
+  saveLocalPreferences();
+});
 localVariations.addEventListener("input", refreshGenerateButton);
 queueRefresh.addEventListener("click", () => { void pollLocalJobs(); });
 gifButton.addEventListener("click", () => { if (selectedLocalJobId) void downloadLocalGif(selectedLocalJobId); });
@@ -295,9 +434,11 @@ localCheck.addEventListener("click", () => { void checkLocalEngine(); });
 
 function applyEngineMode(): void {
   const local = engineEl.value === "local";
+  if (!local && localHealthTimer !== null) { window.clearTimeout(localHealthTimer); localHealthTimer = null; }
   localOpen.classList.toggle("hidden", !local || LOCAL_STUDIO);
   localCheck.classList.toggle("hidden", !local || !LOCAL_STUDIO);
   localSettings.classList.toggle("hidden", !local);
+  modelDiagnostics.classList.toggle("hidden", !local || !LOCAL_STUDIO);
   localDuration.classList.toggle("hidden", !local);
   durationEl.classList.toggle("hidden", local);
   durationEl.disabled = local;
@@ -318,6 +459,7 @@ function applyEngineMode(): void {
     ? "Phosphene handles local inference steps. Quality and batch size are configurable below."
     : "More steps may improve detail, but take longer.";
   localDuration.dispatchEvent(new Event("change"));
+  updateLocalHints();
   durationEl.dispatchEvent(new Event("input"));
   if (local) durationVal.textContent = localDuration.value + "s";
   stepsEl.dispatchEvent(new Event("input"));
@@ -336,38 +478,108 @@ function applyEngineMode(): void {
   refreshGenerateButton();
 }
 
+interface LocalHealth {
+  online?: boolean;
+  readyToGenerate?: boolean;
+  baseAvailable?: boolean;
+  modelIntegrityOK?: boolean;
+  tier?: string;
+  resolutionMax?: number;
+  busy?: boolean;
+  queued?: number;
+  error?: string;
+  memory?: { totalGB?: number; pressurePercent?: number; swapGB?: number };
+  download?: {
+    active?: boolean;
+    state?: string;
+    gemmaPending?: boolean;
+    pending?: Array<{ name?: string; key?: string; leftGB?: number }>;
+  };
+}
+
+function scheduleLocalHealthCheck(): void {
+  if (localHealthTimer !== null) window.clearTimeout(localHealthTimer);
+  localHealthTimer = null;
+  if (!LOCAL_STUDIO || engineEl.value !== "local") return;
+  // Once an installer finishes, the generator becomes usable without an extra
+  // click. Slow polling avoids unnecessary pressure on the owner's Mac.
+  localHealthTimer = window.setTimeout(() => { void checkLocalEngine(); },
+    localEngineReady ? 60_000 : 30_000);
+}
+
 async function checkLocalEngine(): Promise<void> {
   if (!LOCAL_STUDIO || engineEl.value !== "local") return;
   const reqId = ++localCheckId;
   localEngineReady = false;
-  engineHelp.textContent = "Checking Phosphene on http://127.0.0.1:8198…";
+  engineHelp.textContent = "Checking Phosphene model, memory and pending downloads…";
   quotaEl.dataset.state = "unknown";
-  quotaEl.textContent = "Local GPU · unlimited attempts · no provider charges";
+  quotaEl.textContent = "Checking local video engine · no provider fees";
   refreshGenerateButton();
+
   try {
     const res = await fetch("/local/health", { signal: AbortSignal.timeout(8000) });
     if (!res.ok) throw new Error(await readErrorMessage(res));
     const data: unknown = await res.json();
     if (!data || typeof data !== "object") throw new Error("Invalid local engine response.");
     if (reqId !== localCheckId || engineEl.value !== "local") return;
-    const value = data as { online?: boolean; error?: string; busy?: boolean; queued?: number };
-    localEngineReady = value.online === true;
-    if (localEngineReady) void pollLocalJobs();
-    engineHelp.textContent = localEngineReady
-      ? "Phosphene connected. Your image stays on this Mac. Local model output may take several minutes."
-      : value.error || "Start Phosphene in Pinokio, then click Check local engine.";
+    const value = data as LocalHealth;
+    const online = value.online === true;
+    localEngineReady = online && value.readyToGenerate === true;
+
+    if (online) void pollLocalJobs();
+
+    if (!online) {
+      engineHelp.textContent = value.error || "Phosphene is offline. Start it in Pinokio, then check again.";
+    } else if (localEngineReady) {
+      engineHelp.textContent = "Phosphene Q4 ready. Jobs run on this Mac without daily account quotas.";
+    } else if (value.download?.gemmaPending) {
+      engineHelp.textContent = "Phosphene is online, but Gemma text encoder is still downloading. Let it finish.";
+    } else {
+      engineHelp.textContent = "Phosphene is online, but the video model has not passed its readiness checks.";
+    }
+
     quotaEl.dataset.state = localEngineReady ? "ready" : "empty";
     quotaEl.textContent = localEngineReady
-      ? "Local GPU ready · no daily limit · " + (value.busy ? "GPU busy" : "GPU idle") +
-        (typeof value.queued === "number" ? " · " + value.queued + " queued" : "")
-      : "Local renderer offline. Start Phosphene to generate without provider quotas.";
+      ? "Local engine ready · " + (value.busy ? "GPU busy" : "GPU idle")
+        + (typeof value.queued === "number" ? " · " + value.queued + " queued" : "")
+      : online
+        ? "Local model not ready. Do not resubmit until required downloads finish."
+        : "Local renderer offline. Shared cloud mode is separate and quota-limited.";
+
+    modelStatus.textContent = !online ? "Phosphene panel offline."
+      : "Q4 base: " + (value.baseAvailable ? "installed" : "unavailable")
+      + " · Integrity: " + (value.modelIntegrityOK ? "verified" : "unverified")
+      + " · Tier: " + (value.tier || "unknown") + " · Maximum supported dimension: "
+      + (value.resolutionMax || "?") + "px.";
+    const memory = value.memory;
+    if (memory) {
+      const memoryValues = [];
+      if (typeof memory.totalGB === "number") memoryValues.push(memory.totalGB + " GB unified RAM");
+      if (typeof memory.pressurePercent === "number") memoryValues.push(memory.pressurePercent + "% memory pressure");
+      if (typeof memory.swapGB === "number") memoryValues.push(memory.swapGB.toFixed(1) + " GB swap used");
+      modelMemory.textContent = memoryValues.join(" · ")
+        + ((memory.pressurePercent || 0) >= 75 || (memory.swapGB || 0) >= 8
+          ? ". High memory load: Quick / 512px is recommended." : "");
+    } else modelMemory.textContent = "";
+    const pending = value.download?.pending || [];
+    if (pending.length) {
+      modelDownloads.textContent = "Pending: " + pending.slice(0, 3)
+        .map((item) => item.name || item.key || "model").join("; ")
+        + (pending.length > 3 ? "; and " + (pending.length - 3) + " more" : "");
+    } else {
+      modelDownloads.textContent = online ? "No pending model downloads reported." : "";
+    }
   } catch {
     if (reqId !== localCheckId || engineEl.value !== "local") return;
-    engineHelp.textContent = "Cannot reach the local bridge. Run local/start.command in AXOM_VID.";
+    engineHelp.textContent = "Cannot reach the local video bridge. Start AXOM_VID from its SSD launcher.";
     quotaEl.dataset.state = "empty";
-    quotaEl.textContent = "Local connection unavailable.";
+    quotaEl.textContent = "Local bridge unavailable.";
+    modelStatus.textContent = "No local model status available.";
+    modelMemory.textContent = "";
+    modelDownloads.textContent = "";
   }
   refreshGenerateButton();
+  scheduleLocalHealthCheck();
 }
 
 
@@ -672,6 +884,12 @@ async function downloadLocalGif(jobId: string): Promise<void> {
 async function runLocalGeneration(): Promise<void> {
   if (!LOCAL_STUDIO || !localEngineReady || !state.file || state.busy || !promptEl.value.trim()) return;
   const batch = Number(localBatch.value);
+  const duration = Number(localDuration.value);
+  if (duration >= 30 && localBeats.value
+      && localBeats.value.split(/\r?\n/).length > duration / 5) {
+    setStatus("This take allows at most " + (duration / 5) + " five-second storyboard beats.", "error");
+    return;
+  }
   const variants = localVariations.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   if (variants.length > 0 && variants.length !== batch) {
     setStatus("Provide exactly " + batch + " prompt variation(s), or leave variations empty.", "error");
@@ -701,6 +919,11 @@ async function runLocalGeneration(): Promise<void> {
     }
     const form = new FormData();
     form.append("image", state.file);
+    if (localOrientation.value !== "auto") orientation = localOrientation.value;
+    const fixedSeed = Number(localSeed.value);
+    if (!Number.isInteger(fixedSeed) || fixedSeed < -1 || fixedSeed > 2147483640) {
+      throw new Error("Enter -1 for random or a whole-number seed between 0 and 2147483640.");
+    }
     form.append("params", JSON.stringify({
       prompt: promptEl.value.trim(),
       duration_seconds: Number(localDuration.value),
@@ -708,6 +931,12 @@ async function runLocalGeneration(): Promise<void> {
       batch_count: batch,
       prompts: variants.length ? variants : null,
       quality: localQuality.value,
+      resolution: localResolution.value,
+      camera: localCamera.value,
+      intensity: localIntensity.value,
+      look: localLook.value,
+      seed: fixedSeed,
+      beats: duration >= 30 ? localBeats.value : null,
     }));
     const res = await fetch("/local/generate", {
       method: "POST", body: form, signal: controller.signal,
@@ -966,6 +1195,6 @@ function addToHistory(url: string) {
 
 // Initial UI state: only the loopback server can submit no-quota local jobs.
 showResultState("empty");
-if (LOCAL_STUDIO) restoreLocalJobs();
+if (LOCAL_STUDIO) { restoreLocalJobs(); restoreLocalPreferences(); }
 engineEl.value = LOCAL_STUDIO ? "local" : "shared";
 applyEngineMode();
