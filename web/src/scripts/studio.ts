@@ -368,6 +368,9 @@ function updateLocalHints(): void {
   if (size >= 640) notes.push("Higher resolution is experimental on 18 GB of RAM.");
   if (localQuality.value === "balanced") notes.push("Balanced takes longer than Quick.");
   if (Number(localBatch.value) > 1) notes.push("Queued generations run sequentially.");
+  if (lastLocalGuard && !localSettingsAreSafe()) {
+    notes.unshift("Current settings exceed the Mac's safe limits. Choose Use low-memory preset.");
+  }
   if (!notes.length) notes.push("Recommended on 18 GB: Quick · 3s · 512px · 1 job.");
   localHint.textContent = notes.join(" ");
 }
@@ -408,6 +411,7 @@ for (const control of [localCamera, localIntensity, localLook]) {
 for (const control of [localOrientation, localResolution, localSeed]) {
   control.addEventListener("change", () => {
     updateLocalHints();
+    refreshGenerateButton();
     saveLocalPreferences();
   });
 }
@@ -416,6 +420,7 @@ promptEl.addEventListener("input", refreshGenerateButton);
 localDuration.addEventListener("change", () => {
   durationVal.textContent = localDuration.value + "s";
   updateLocalHints();
+  refreshGenerateButton();
   saveLocalPreferences();
 });
 localBatch.addEventListener("change", () => {
@@ -425,6 +430,7 @@ localBatch.addEventListener("change", () => {
 });
 localQuality.addEventListener("change", () => {
   updateLocalHints();
+  refreshGenerateButton();
   saveLocalPreferences();
 });
 localVariations.addEventListener("input", refreshGenerateButton);
