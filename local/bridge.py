@@ -37,6 +37,111 @@ ALLOWED_DURATIONS = (3, 5, 7, 10, 30, 45, 60, 90, 120)
 LONG_TAKES = (30, 45, 60, 90, 120)
 MAX_BATCH = 6
 DEFAULT_PHOSPHENE_URL = "http://127.0.0.1:8198"
+RESOLUTION_SIZES = {"512": (512, 288), "640": (640, 352), "704": (704, 384)}
+CAMERA_MOVES = {
+    "steady": ("steady, locked-off camera", "a steady locked-off camera"),
+    "push_in": ("slow cinematic dolly push-in", "a smooth continuous dolly push forward"),
+    "pull_back": ("slow dolly pull-back", "a steady pull-back at one speed"),
+    "pan_left": ("smooth camera pan left", "a smooth continuous pan left"),
+    "pan_right": ("smooth camera pan right", "a smooth continuous pan right"),
+    "orbit": ("smooth slow camera orbit", "a continuous slow orbit around the subject"),
+    "tracking": ("steady tracking camera movement", "steady continuous tracking movement"),
+    "tilt_up": ("gentle camera tilt up", "a gentle continuous tilt up"),
+}
+MOTION_LEVELS = {
+    "subtle": "very gentle motion with stable framing and consistent details",
+    "natural": "natural fluid movement with temporal consistency",
+    "dynamic": "expressive cinematic movement with coherent physical motion",
+}
+VISUAL_LOOKS = {
+    "original": "preserve the original image's visual style",
+    "cinematic": "cinematic lighting, refined color grade and believable image detail",
+    "documentary": "natural documentary footage, restrained realistic camera",
+    "illustrated": "polished illustrated animation with stable character design",
+    "product": "clean professional product showcase lighting and smooth presentation",
+}
+
+
+def summarize_panel_status(state: dict[str, Any]) -> dict[str, Any]:
+    """Browser-safe capabilities from the local panel; no private paths."""
+    deferred = state.get("deferred_downloads")
+    deferred = deferred if isinstance(deferred, dict) else {}
+    pending = deferred.get("pending", [])
+    pending = pending if isinstance(pending, list) else []
+    items: list[dict[str, Any]] = []
+    for item in pending[:15]:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key", ""))[:48]
+        name = str(item.get("name", key))[:90]
+        left = item.get("left_gb")
+        items.append({"key": key, "name": name,
+                      "leftGB": round(left, 2) if isinstance(left, (float, int))
+                      and not isinstance(left, bool) else None})
+    downloading_gemma = (
+        deferred.get("active") is True and deferred.get("key") == "gemma"
+        or any(item["key"] == "gemma" for item in items)
+    )
+    tier = state.get("tier")
+    tier = tier if isinstance(tier, dict) else {}
+    memory = state.get("memory")
+    memory = memory if isinstance(memory, dict) else {}
+    integrity = state.get("model_integrity")
+    integrity = integrity if isinstance(integrity, dict) else {}
+    env = state.get("engine_env")
+    env = env if isinstance(env, dict) else {}
+    base = state.get("base_available") is True
+    quality = integrity.get("ok") is True
+    healthy = env.get("ok") is not False
+    busy = isinstance(state.get("current"), dict)
+    queue = state.get("queue", [])
+    queued = len(queue) if isinstance(queue, list) else 0
+    gpu = state.get("gpu")
+    gpu = gpu if isinstance(gpu, dict) else {}
+    model_ready = base and quality and healthy and not downloading_gemma
+    max_dim = tier.get("i2v_max_dim")
+    if not isinstance(max_dim, int) or not (256 <= max_dim <= 8192):
+        max_dim = 512
+    return {
+        "online": True,
+        "provider": "Phosphene LTX local",
+        "baseAvailable": base,
+        "modelIntegrityOK": quality,
+        "readyToGenerate": model_ready,
+        "download": {
+            "active": deferred.get("active") is True,
+            "state": str(deferred.get("state", "unknown"))[:40],
+            "gemmaPending": downloading_gemma,
+            "pending": items,
+        },
+        "memory": {
+            "totalGB": memory.get("total_gb"),
+            "pressurePercent": memory.get("pressure_pct"),
+            "swapGB": memory.get("swap_gb"),
+        },
+        "tier": str(tier.get("key", "unknown"))[:50],
+        "resolutionMax": max_dim,
+        "availableQualities": ["quick", "balanced"],
+        "busy": busy or gpu.get("busy") is True,
+        "queued": queued,
+    }
+
+
+def composed_prompt(prompt: str, settings: dict[str, Any]) -> str:
+    extras = [
+        CAMERA_MOVES[settings.get("camera", "steady")][0],
+        MOTION_LEVELS[settings.get("intensity", "natural")],
+        VISUAL_LOOKS[settings.get("look", "original")],
+    ]
+    # Keep source prompt unchanged and explicit, append grounded controllable
+    # motion cues; the prompt encoder, not a separate imaginary slider,
+    # interprets these text instructions.
+    result = prompt.strip() + ". " + ". ".join(extras) + "."
+    if len(result) > MAX_PROMPT:
+        raise BridgeFailure("Shorten the prompt to make room for creative direction.", 400)
+    return result
+
+
 ALLOWED_IMAGE_TYPES = {
     "image/png": (b"\x89PNG\r\n\x1a\n", "png"),
     "image/jpeg": (b"\xff\xd8\xff", "jpg"),
@@ -144,6 +249,20 @@ def parse_form(data: bytes, content_type: str) -> tuple[bytes, str, dict[str, An
     quality = settings.get("quality", "quick")
     if quality not in ("quick", "balanced"):
         raise BridgeFailure("Local quality must be quick or balanced.", 400)
+    if str(settings.get("resolution", "512")) not in RESOLUTION_SIZES:
+        raise BridgeFailure("Select a supported local resolution.", 400)
+    for name, allowed in (("camera", CAMERA_MOVES),
+                          ("intensity", MOTION_LEVELS), ("look", VISUAL_LOOKS)):
+        value = settings.get(name, {
+            "camera": "steady", "intensity": "natural", "look": "original",
+        }[name])
+        if not isinstance(value, str) or value not in allowed:
+            raise BridgeFailure(f"Unsupported {name} option.", 400)
+    seed = settings.get("seed", -1)
+    if not isinstance(seed, int) or isinstance(seed, bool) or not (-1 <= seed < 2**31 - MAX_BATCH):
+        raise BridgeFailure("Seed must be -1 (random) or a number from 0 to 2147483640.", 400)
+    for text in (settings.get("prompts") or [prompt]):
+        composed_prompt(text, settings)
     return image, mime, settings
 
 
